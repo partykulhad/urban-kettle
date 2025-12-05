@@ -1,5 +1,6 @@
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.image import Image
@@ -45,48 +46,47 @@ class ThankYouPage(Screen):
             self.rect = RoundedRectangle(size=Window.size, pos=(0, 0))
         main_layout.bind(size=self._update_rect)
         
-        # Top spacing
-        main_layout.add_widget(Widget(size_hint_y=0.03))
+        # Top section with logo on left - matching other pages
+        top_section = BoxLayout(orientation='vertical', size_hint_y=0.16, padding=[10, 5])
         
-        # Urban Ketl logo section
-        logo_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.12)
+        # Logo on the left
+        logo_float = FloatLayout(size_hint_y=0.7)
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
         
         if os.path.exists(logo_path):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(200, 180),
+                size=(230, 200),
+                pos_hint={'x': -0.05, 'top': 1.2},  # More left
                 allow_stretch=True,
                 keep_ratio=True
             )
-            logo_section.add_widget(logo_image)
+            logo_float.add_widget(logo_image)
         else:
-            # Fallback to text if image not found
             fallback_logo = Label(
                 text='Urban Ketl',
-                font_size='28sp',
+                font_size='32sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
-                halign='center'
+                halign='left'
             )
-            logo_section.add_widget(fallback_logo)
+            logo_float.add_widget(fallback_logo)
         
-        main_layout.add_widget(logo_section)
+        top_section.add_widget(logo_float)
         
-        # Spacing
-        main_layout.add_widget(Widget(size_hint_y=0.03))
-        
-        # "ENJOY YOUR CHAI!" text
+        # "ENJOY YOUR CHAI!" text - bigger font
         enjoy_label = Label(
             text='ENJOY YOUR CHAI!',
-            font_size='36sp',
+            font_size='40sp',  # Increased from 36sp
             bold=True,
-            color=(0.714, 0.478, 0.176, 1),  # Tea cup brown color
+            color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.10
+            size_hint_y=0.3
         )
-        main_layout.add_widget(enjoy_label)
+        top_section.add_widget(enjoy_label)
+        
+        main_layout.add_widget(top_section)
         
         # Thank you image (tea cup with steam)
         image_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.35)

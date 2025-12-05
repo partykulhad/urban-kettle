@@ -1,0 +1,17 @@
+[Unit]
+Description=Urban Kettle Chai Ordering Kiosk
+After=graphical.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+WorkingDirectory=/home/pi/urban-kettle
+ExecStart=/home/pi/urban-kettle/launch_pi.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=graphical.target

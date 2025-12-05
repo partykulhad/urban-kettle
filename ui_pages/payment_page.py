@@ -54,50 +54,52 @@ class PaymentPage(Screen):
             self.rect = RoundedRectangle(size=Window.size, pos=self.pos)
         main_layout.bind(size=self._update_rect)
         
-        # Top spacing
-        main_layout.add_widget(Widget(size_hint_y=0.02))
+        # Top section with logo on left and SCAN TO PAY
+        top_section = BoxLayout(orientation='vertical', size_hint_y=0.18, padding=[10, 5])
         
-        # Urban Ketl logo section
-        logo_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.12)
+        # Logo on the left using FloatLayout
+        logo_float = BoxLayout(size_hint_y=0.6)
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
         
         if os.path.exists(logo_path):
+            from kivy.uix.floatlayout import FloatLayout
+            logo_container = FloatLayout()
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(200, 180),
+                size=(230, 200),
+                pos_hint={'x': 0.0, 'top': 1.3},  # Left side, top position
                 allow_stretch=True,
                 keep_ratio=True
             )
-            logo_section.add_widget(logo_image)
+            logo_container.add_widget(logo_image)
+            logo_float.add_widget(logo_container)
         else:
-            # Fallback to text if image not found
             fallback_logo = Label(
                 text='Urban Ketl',
-                font_size='28sp',
+                font_size='32sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
-                halign='center'
+                halign='left'
             )
-            logo_section.add_widget(fallback_logo)
+            logo_float.add_widget(fallback_logo)
         
-        main_layout.add_widget(logo_section)
+        top_section.add_widget(logo_float)
         
-        # Spacing
-        main_layout.add_widget(Widget(size_hint_y=0.02))
-        
-        # "SCAN TO PAY" text
+        # "SCAN TO PAY" text - moved higher with bigger font
         scan_label = Label(
             text='SCAN TO PAY',
-            font_size='32sp',
+            font_size='40sp',  # Increased from 32sp
             bold=True,
-            color=(0.714, 0.478, 0.176, 1),  # Brown color
+            color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.07
+            size_hint_y=0.4
         )
-        main_layout.add_widget(scan_label)
+        top_section.add_widget(scan_label)
         
-        # Spacing
+        main_layout.add_widget(top_section)
+        
+        # Reduced spacing
         main_layout.add_widget(Widget(size_hint_y=0.01))
         
         # QR code section
@@ -134,13 +136,13 @@ class PaymentPage(Screen):
         # Spacing
         main_layout.add_widget(Widget(size_hint_y=0.01))
         
-        # Total amount display below QR code
+        # Total amount display below QR code - increased font
         amount_section = AnchorLayout(anchor_x='right', anchor_y='center', size_hint_y=0.08)
         self.amount_label = Label(
             text='Total: ₹0',
-            font_size='24sp',
+            font_size='30sp',  # Increased from 24sp
             bold=True,
-            color=(0.714, 0.478, 0.176, 1),  # Urban Ketl brown
+            color=(0.714, 0.478, 0.176, 1),
             halign='right'
         )
         amount_section.add_widget(self.amount_label)
@@ -149,12 +151,12 @@ class PaymentPage(Screen):
         # Spacing
         main_layout.add_widget(Widget(size_hint_y=0.01))
         
-        # Instruction text
+        # Instruction text - increased fonts
         instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.09, spacing=3)
         
         scan_text_label = Label(
             text='Scan this QR with your UPI',
-            font_size='20sp',
+            font_size='24sp',  # Increased from 20sp
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -162,7 +164,7 @@ class PaymentPage(Screen):
         
         payment_label = Label(
             text='app to make payment.',
-            font_size='20sp',
+            font_size='24sp',  # Increased from 20sp
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -170,12 +172,12 @@ class PaymentPage(Screen):
         
         main_layout.add_widget(instruction_section)
         
-        # Timer display
+        # Timer display - increased font
         self.payment_status_label = Label(
             text='Pay within 2:30',
-            font_size='18sp',
+            font_size='22sp',  # Increased from 18sp
             bold=True,
-            color=(0.906, 0.298, 0.235, 1),  # Red color
+            color=(0.906, 0.298, 0.235, 1),
             size_hint_y=0.06,
             halign='center'
         )
@@ -190,11 +192,11 @@ class PaymentPage(Screen):
         cancel_btn = SimpleButton(
             text='Cancel',
             size_hint=(None, None),
-            size=(130, 50),
-            font_size='18sp',
+            size=(150, 55),  # Increased size
+            font_size='22sp',  # Increased from 18sp
             bold=True,
             color=(1, 1, 1, 1),
-            bg_color=(0.906, 0.298, 0.235, 1)  # Red color
+            bg_color=(0.906, 0.298, 0.235, 1)
         )
         cancel_btn.bind(on_press=self.cancel_payment)
         

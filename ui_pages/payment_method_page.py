@@ -102,14 +102,14 @@ class PremiumPaymentCard(Widget):
             Color(0, 0, 0, 0.12)
             RoundedRectangle(pos=(self.pos[0] + 3, self.pos[1] - 3), size=self.size, radius=[30])
             
-            # Main card background - transparent matching original background
+            # Main card background - bright orange color (#F29900)
             if self.card_type == 'upi':
-                # Light cream color for UPI
-                Color(0.992, 0.957, 0.741, 1)
+                # Bright orange for UPI card
+                Color(0.949, 0.6, 0.0, 1)
 
             else:
-                # Slightly different tint for RFID
-                Color(0.992, 0.957, 0.741, 1)
+                # Same bright orange for RFID card
+                Color(0.949, 0.6, 0.0, 1)
                 
             RoundedRectangle(pos=self.pos, size=self.size, radius=[30])
             
@@ -160,8 +160,8 @@ class CupsCounterWidget(BoxLayout):
         self.cups_count = 0
         self.is_loading = True
         
-        # Top row with icon and number
-        top_row = BoxLayout(orientation='horizontal', spacing=2, size_hint_y=0.7)
+        # Top row with icon and number - reduced to give more space for text below
+        top_row = BoxLayout(orientation='horizontal', spacing=2, size_hint_y=0.5)
         
         # Cup icon image
         cup_icon_path = os.path.join('assets', 'cupnumber.png')
@@ -204,15 +204,15 @@ class CupsCounterWidget(BoxLayout):
         
         self.add_widget(top_row)
         
-        # "Cups Available" label below
+        # "Cups" and "Available" labels on separate lines - increased space
         self.availability_label = Label(
-            text='Cups Available',
-            font_size='12sp',
+            text='Cups\nAvailable',  # Two lines for better visibility
+            font_size='15sp',
             color=(0.714, 0.478, 0.176, 1),  # Urban Ketl brown
-            size_hint_y=0.3,
+            size_hint_y=0.5,  # Increased from 0.3 to 0.5 for more vertical space
             halign='left',
             valign='top',
-            padding=(0, 0, 70, 0)  # Right padding to push text left
+            padding=(0, 0, 20, 0)  # Further reduced padding
         )
         self.availability_label.bind(size=self.availability_label.setter('text_size'))
         self.add_widget(self.availability_label)
@@ -403,17 +403,30 @@ class RFIDInstructionPopup(Popup):
         close_btn.bind(on_press=self.dismiss)
         content.add_widget(close_btn)
         
-        # Checkmark icon
-        icon_label = Label(
-            text='✓',
-            font_size='64sp',
-            color=(0.2, 0.7, 0.3, 1),  # Green color
-            halign='center',
-            pos_hint={'center_x': 0.5, 'center_y': 0.75},
-            size_hint=(None, None),
-            size=(100, 80)
-        )
-        content.add_widget(icon_label)
+        # Arrow mark image at top - larger and centered
+        arrow_path = os.path.join('assets', 'arrowmark.png')
+        if os.path.exists(arrow_path):
+            arrow_image = Image(
+                source=arrow_path,
+                size_hint=(None, None),
+                size=(100, 100),  # Larger size
+                pos_hint={'center_x': 0.5, 'center_y': 0.75},  # Top center
+                allow_stretch=True,
+                keep_ratio=True
+            )
+            content.add_widget(arrow_image)
+        else:
+            # Fallback to arrow emoji if image not found
+            icon_label = Label(
+                text='---->',
+                font_size='64sp',
+                color=(0.714, 0.478, 0.176, 1),  # Urban Ketl brown
+                halign='center',
+                pos_hint={'center_x': 0.5, 'center_y': 0.75},
+                size_hint=(None, None),
+                size=(100, 80)
+            )
+            content.add_widget(icon_label)
         
         # Main instruction text
         instruction_label = Label(
@@ -817,46 +830,44 @@ class PaymentMethodPage(Screen):
             self.rect = RoundedRectangle(size=Window.size, pos=self.pos)
         main_layout.bind(size=self._update_rect)
         
-        # Top bar with cups counter in absolute top-right corner
-        top_bar = FloatLayout(size_hint_y=0.08)
+        # Top bar with logo on left and cups counter on right
+        top_bar = FloatLayout(size_hint_y=0.15)
         
-        # Cups counter widget (absolute top-right corner) - icon + number + label format
-        self.cups_counter = CupsCounterWidget(
-            size_hint=(None, None),
-            size=(155, 70),
-            pos_hint={'right': 0.95, 'top': 0.75}
-        )
-        top_bar.add_widget(self.cups_counter)
-        
-        main_layout.add_widget(top_bar)
-        
-        # Urban Ketl logo section - optimized for 7-inch tablet
-        logo_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.12)
+        # Urban Kettle logo on the left side
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
-        
         if os.path.exists(logo_path):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(200, 180),
+                size=(260, 230),
+                pos_hint={'x': 0.0, 'top': 1.35},  # Moved to very top-left corner
                 allow_stretch=True,
                 keep_ratio=True
             )
-            logo_section.add_widget(logo_image)
+            top_bar.add_widget(logo_image)
         else:
             fallback_logo = Label(
                 text='Urban Ketl',
                 font_size='28sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
-                halign='center'
+                pos_hint={'x': 0.02, 'top': 0.95},
+                halign='left'
             )
-            logo_section.add_widget(fallback_logo)
+            top_bar.add_widget(fallback_logo)
         
-        main_layout.add_widget(logo_section)
+        # Cups counter widget (absolute top-right corner) - increased height significantly
+        self.cups_counter = CupsCounterWidget(
+            size_hint=(None, None),
+            size=(180, 110),  # Further increased height to 110
+            pos_hint={'right': 0.98, 'top': 0.92}  # Adjusted top position
+        )
+        top_bar.add_widget(self.cups_counter)
         
-        # Spacing
-        main_layout.add_widget(Widget(size_hint_y=0.02))
+        main_layout.add_widget(top_bar)
+        
+        # Reduced spacing since logo is now in top bar
+        main_layout.add_widget(Widget(size_hint_y=0.01))
         
         # Title centered
         title_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.08)
@@ -901,7 +912,7 @@ class PaymentMethodPage(Screen):
         # UPI icon/image section
         upi_image_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.5)
 
-        upi_image_path = os.path.join('assets', 'upilogo.png')
+        upi_image_path = os.path.join('assets', 'upilogo3.png')
 
         if os.path.exists(upi_image_path):
             upi_image = Image(
@@ -927,7 +938,7 @@ class PaymentMethodPage(Screen):
         # UPI text label
         upi_text = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.2)
         upi_text_label = Label(
-            text='UPI',
+            text='',
             font_size='36sp',
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
@@ -966,13 +977,13 @@ class PaymentMethodPage(Screen):
         # RFID image section
         image_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.5)
         
-        rfid_image_path = os.path.join('assets', 'rfidlogo.png')
+        rfid_image_path = os.path.join('assets', 'rfidlogo2.png')
         
         if os.path.exists(rfid_image_path):
             rfid_image = Image(
                 source=rfid_image_path,
                 size_hint=(None, None),
-                size=(200, 150),
+                size=(250, 200),
                 allow_stretch=True,
                 keep_ratio=True
             )
@@ -992,7 +1003,7 @@ class PaymentMethodPage(Screen):
         # RFID text label
         rfid_text = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.15)
         rfid_text_label = Label(
-            text='RFID',
+            text='',
             font_size='36sp',
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
@@ -1004,7 +1015,7 @@ class PaymentMethodPage(Screen):
         # "one cup per tap" subtitle
         tap_info = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.1)
         tap_info_label = Label(
-            text='one cup per tap',
+            text='',
             font_size='26sp',
             color=(0.5, 0.5, 0.5, 1),  # Gray color
             halign='center',

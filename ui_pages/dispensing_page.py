@@ -170,84 +170,80 @@ class PlaceCupPage(Screen):
             self.rect = RoundedRectangle(size=Window.size, pos=self.pos)
         main_layout.bind(size=self._update_rect, pos=self._update_rect)
         
-        # Top spacing
-        main_layout.add_widget(Widget(size_hint_y=0.03))
+        # Top section with logo on left - matching other pages
+        from kivy.uix.floatlayout import FloatLayout
+        top_section = BoxLayout(orientation='vertical', size_hint_y=0.16, padding=[10, 5])
         
-        # Urban Ketl logo section
-        logo_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.12)
+        # Logo on the left
+        logo_float = FloatLayout(size_hint_y=0.7)
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
         
         if os.path.exists(logo_path):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(200, 180),
+                size=(230, 200),
+                pos_hint={'x': -0.05, 'top': 1.4},  # More left
                 allow_stretch=True,
                 keep_ratio=True
             )
-            logo_section.add_widget(logo_image)
+            logo_float.add_widget(logo_image)
         else:
-            # Fallback to text if image not found
             fallback_logo = Label(
                 text='Urban Ketl',
-                font_size='28sp',
+                font_size='32sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
-                halign='center'
+                halign='left'
             )
-            logo_section.add_widget(fallback_logo)
+            logo_float.add_widget(fallback_logo)
         
-        main_layout.add_widget(logo_section)
+        top_section.add_widget(logo_float)
         
-        # Spacing
-        main_layout.add_widget(Widget(size_hint_y=0.02))
-        
-        # "PAYMENT RECEIVED" text
+        # "PAYMENT RECEIVED" text - bigger font
         payment_label = Label(
             text='PAYMENT RECEIVED',
-            font_size='32sp',
+            font_size='38sp',  # Increased from 32sp
             bold=True,
-            color=(0.714, 0.478, 0.176, 1),  # Brown color
+            color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.08
+            size_hint_y=0.3
         )
-        main_layout.add_widget(payment_label)
+        top_section.add_widget(payment_label)
         
-        # Spacing
-        main_layout.add_widget(Widget(size_hint_y=0.02))
+        main_layout.add_widget(top_section)
         
-        # Place cup image
-        image_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.32)
+        # Place cup image - bigger
+        image_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.35)
         placecup_image_path = os.path.join('assets', 'placecup.png')
         
         if os.path.exists(placecup_image_path):
             placecup_image = Image(
                 source=placecup_image_path,
                 size_hint=(None, None),
-                size=(220, 220),
+                size=(260, 260),  # Increased from 220
                 allow_stretch=True,
                 keep_ratio=True
             )
             image_section.add_widget(placecup_image)
         else:
-            # Fallback if image not found
-            fallback_widget = Widget(size_hint=(None, None), size=(220, 220))
+            fallback_widget = Widget(size_hint=(None, None), size=(260, 260))
             with fallback_widget.canvas:
                 Color(0.714, 0.478, 0.176, 1)
-                RoundedRectangle(pos=(0, 0), size=(220, 220), radius=[20])
+                RoundedRectangle(pos=(0, 0), size=(260, 260), radius=[20])
             image_section.add_widget(fallback_widget)
         
         main_layout.add_widget(image_section)
         
         # Spacing
-        main_layout.add_widget(Widget(size_hint_y=0.02))
+        main_layout.add_widget(Widget(size_hint_y=0.01))
         
-        # "Please place your cup in the holder." text
-        instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.11, spacing=3)
+        # "Please place your cup in the holder." text - bigger fonts
+        instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.12, spacing=5)
         
         place_label = Label(
             text='Please place your cup',
-            font_size='24sp',
+            font_size='28sp',  # Increased from 24sp
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -255,7 +251,7 @@ class PlaceCupPage(Screen):
         
         holder_label = Label(
             text='in the holder.',
-            font_size='24sp',
+            font_size='28sp',  # Increased from 24sp
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -263,10 +259,10 @@ class PlaceCupPage(Screen):
         
         main_layout.add_widget(instruction_section)
         
-        # Spacing before button
-        main_layout.add_widget(Widget(size_hint_y=0.03))
+        # Spacing before button - move button down
+        main_layout.add_widget(Widget(size_hint_y=0.02))
         
-        # Continue button
+        # Continue button - bigger with proper text fit
         button_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.11)
         
         # Simple button class for this page
@@ -280,30 +276,30 @@ class PlaceCupPage(Screen):
             def update_graphics(self, *args):
                 self.canvas.before.clear()
                 with self.canvas.before:
-                    Color(0.851, 0.647, 0.125, 1)  # Orange/gold color
+                    Color(0.851, 0.647, 0.125, 1)
                     RoundedRectangle(pos=self.pos, size=self.size, radius=[15])
         
         self.continue_button = SimpleButton(
             text='Continue Dispensing',
-            font_size='20sp',
+            font_size='22sp',  # Reduced from 24sp for better fit
             bold=True,
             color=(1, 1, 1, 1),
             size_hint=(None, None),
-            size=(300, 60)
+            size=(400, 70)  # Increased width from 340 to fit full text
         )
         self.continue_button.bind(on_press=self.on_continue_pressed)
-        self.continue_button.disabled = True  # Disabled until cup is detected
-        self.continue_button.opacity = 0.5  # Visual feedback
+        self.continue_button.disabled = True
+        self.continue_button.opacity = 0.5
         
         button_section.add_widget(self.continue_button)
         main_layout.add_widget(button_section)
         
-        # Cup status label
+        # Cup status label - bigger font
         self.cup_status_label = Label(
             text='Waiting for cup...',
-            font_size='16sp',
-            color=(0.906, 0.298, 0.235, 1),  # Red
-            size_hint_y=0.05,
+            font_size='20sp',  # Increased from 16sp
+            color=(0.906, 0.298, 0.235, 1),
+            size_hint_y=0.06,
             halign='center'
         )
         main_layout.add_widget(self.cup_status_label)
@@ -557,7 +553,7 @@ class PlaceCupPage(Screen):
         
         if cup_present:
             # Cup detected!
-            self.cup_status_label.text = 'Cup detected ✓'
+            self.cup_status_label.text = ''
             self.cup_status_label.color = (0.18, 0.8, 0.44, 1)  # Green
             self.continue_button.text = 'Cup Placed - Confirm to Dispense'
             self.continue_button.disabled = False
@@ -593,56 +589,57 @@ class DispensingPage(Screen):
             self.rect = RoundedRectangle(size=Window.size, pos=self.pos)
         main_layout.bind(size=self._update_rect, pos=self._update_rect)
         
-        # Top spacing
-        main_layout.add_widget(Widget(size_hint_y=0.02))
+        # Top section with logo on left - matching other pages
+        from kivy.uix.floatlayout import FloatLayout
+        top_section = BoxLayout(orientation='vertical', size_hint_y=0.15, padding=[10, 5])
         
-        # Urban Ketl logo section
-        logo_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.12)
+        # Logo on the left
+        logo_float = FloatLayout(size_hint_y=0.6)
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
         
         if os.path.exists(logo_path):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(180, 162),
+                size=(230, 200),
+                pos_hint={'x': -0.05, 'top': 1.2},  # More left
                 allow_stretch=True,
                 keep_ratio=True
             )
-            logo_section.add_widget(logo_image)
+            logo_float.add_widget(logo_image)
         else:
             fallback_logo = Label(
                 text='Urban Ketl',
-                font_size='28sp',
+                font_size='32sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
-                halign='center'
+                halign='left'
             )
-            logo_section.add_widget(fallback_logo)
+            logo_float.add_widget(fallback_logo)
         
-        main_layout.add_widget(logo_section)
+        top_section.add_widget(logo_float)
         
-        # Spacing
-        main_layout.add_widget(Widget(size_hint_y=0.01))
-        
-        # "DISPENSING..." text
+        # "DISPENSING..." text - bigger font
         dispensing_label = Label(
             text='DISPENSING...',
-            font_size='32sp',
+            font_size='40sp',  # Increased from 32sp
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.07
+            size_hint_y=0.4
         )
-        main_layout.add_widget(dispensing_label)
+        top_section.add_widget(dispensing_label)
         
-        # Cup counter - "Cup 1 of 3"
+        main_layout.add_widget(top_section)
+        
+        # Cup counter - bigger font
         self.cup_counter_label = Label(
             text='Cup 1 of 1',
-            font_size='20sp',
+            font_size='26sp',  # Increased from 20sp
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.05
+            size_hint_y=0.06
         )
         main_layout.add_widget(self.cup_counter_label)
         
@@ -665,12 +662,12 @@ class DispensingPage(Screen):
         # Spacing
         main_layout.add_widget(Widget(size_hint_y=0.01))
         
-        # Instruction text
-        instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.09, spacing=3)
+        # Instruction text - bigger fonts
+        instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.10, spacing=5)
         
         tea_label = Label(
             text='Your tea is being prepared.',
-            font_size='22sp',
+            font_size='26sp',  # Increased from 22sp
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -678,7 +675,7 @@ class DispensingPage(Screen):
         
         wait_label = Label(
             text='Please wait.',
-            font_size='22sp',
+            font_size='26sp',  # Increased from 22sp
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -686,23 +683,24 @@ class DispensingPage(Screen):
         
         main_layout.add_widget(instruction_section)
         
-        # Progress bar section
-        progress_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.11)
+        # Progress bar section - bigger
+        progress_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.13)
         progress_container = BoxLayout(orientation='vertical', size_hint=(None, None), 
-                                     size=(350, 55), spacing=8)
+                                     size=(400, 65), spacing=10)  # Increased size
         
         # Progress bar
         self.progress_bar = ModernProgressBar()
+        self.progress_bar.size = (400, 28)  # Bigger progress bar
         progress_container.add_widget(self.progress_bar)
         
-        # Progress percentage
+        # Progress percentage - bigger font
         self.progress_label = Label(
             text='0%',
-            font_size='18sp',
+            font_size='24sp',  # Increased from 18sp
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
             size_hint_y=None,
-            height='22sp'
+            height='28sp'
         )
         progress_container.add_widget(self.progress_label)
         

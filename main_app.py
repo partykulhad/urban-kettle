@@ -6,6 +6,7 @@ from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.popup import Popup
 from kivy.uix.button import Button
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
 import threading
 import time
 import os
@@ -29,6 +30,7 @@ from ui_pages.qr_expired_page import QRExpiredPage
 from ui_pages.machine_empty_page import MachineEmptyPage
 from ui_pages.rfid_auth_page import RFIDAuthPage
 from ui_pages.hardware_debug_page import HardwareDebugPage
+from ui_pages.hardware_error_page import HardwareErrorPage
 
 
 class ChaiOrderingApp(App):
@@ -70,6 +72,7 @@ class ChaiOrderingApp(App):
         self.machine_empty_page = MachineEmptyPage(name='machine_empty')
         self.rfid_auth_page = RFIDAuthPage(name='rfid_auth')  # RFID authentication page
         self.hardware_debug_page = HardwareDebugPage(name='hardware_debug')  # Hardware debug page
+        self.hardware_error_page = HardwareErrorPage(name='hardware_error')
         
         # Add screens to screen manager
         self.screen_manager.add_widget(self.payment_method_page)
@@ -85,6 +88,7 @@ class ChaiOrderingApp(App):
         self.screen_manager.add_widget(self.machine_empty_page)
         self.screen_manager.add_widget(self.rfid_auth_page)  # RFID authentication page
         self.screen_manager.add_widget(self.hardware_debug_page)  # Hardware debug page
+        self.screen_manager.add_widget(self.hardware_error_page)
         
         # Set initial screen to payment method selection
         self.screen_manager.current = 'payment_method'
@@ -92,14 +96,17 @@ class ChaiOrderingApp(App):
         # Setup screensaver monitoring
         self.setup_screensaver_monitoring()
         
+        # Setup hardware error monitoring
+        self.setup_hardware_error_monitoring()
+        
         # Set exact 7-inch tablet dimensions (7 inches diagonal)
         # Standard 7-inch tablet: 1024x600 pixels at ~170 PPI
         # Physical size: 6.1" x 3.6" = 7" diagonal
-        Window.size = (1024, 600)
-        Window.minimum_width = 1024
-        Window.minimum_height = 600
-        Window.maximum_width = 1024
-        Window.maximum_height = 600
+        Window.size = (881, 661)
+        Window.minimum_width = 881
+        Window.minimum_height = 661
+        Window.maximum_width = 881
+        Window.maximum_height = 661
         # Lock to exact 7-inch tablet size
         Window.resizable = False
         
@@ -550,6 +557,24 @@ class ChaiOrderingApp(App):
         print("Timer expired - cancelling payment and showing expiration page")
         # Cancel payment with timer_expired flag
         self.cancel_payment(timer_expired=True)
+    
+    def setup_hardware_error_monitoring(self):
+        """Setup monitoring for hardware errors"""
+        # Check for errors every 2 seconds
+        Clock.schedule_interval(self.check_hardware_errors, 2)
+        
+    def check_hardware_errors(self, dt):
+        """Check for hardware errors and navigate to error page if needed"""
+        error_msg = hardware_monitor.get_latest_error()
+        
+        current_screen = self.screen_manager.current
+        
+        # Only show error page if we're not already on it and there's an error
+        if error_msg and current_screen != 'hardware_error':
+            print(f"Hardware error detected: {error_msg} - Navigating to error page")
+            self.screen_manager.current = 'hardware_error'
+            if hasattr(self.hardware_error_page, 'set_error_message'):
+                self.hardware_error_page.set_error_message(error_msg)
     
     def on_stop(self):
         """Called when app is closing"""

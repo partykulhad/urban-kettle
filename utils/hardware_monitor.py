@@ -16,8 +16,11 @@ import socket
 class HardwareMonitor:
     """Background service for hardware monitoring"""
     
-    def __init__(self, machine_id="KH-01", api_base_url="http://192.168.68.162:5000"):
-        self.device_id = "UK_14335C5D48C8"  # Hardcoded device ID
+    def __init__(self, machine_id="KH-01", api_base_url="http://127.0.0.1:5000"):
+        # Default to RPI MAC address based ID
+        self.device_id = self.get_rpi_device_id()
+        print(f"Initialized HardwareMonitor with Device ID: {self.device_id}")
+        
         self.machine_id = machine_id
         self.api_base_url = api_base_url  # Static URL - never changes
         self.db_api_url = "https://kulhad.vercel.app/api/machine-temperature"
@@ -30,7 +33,32 @@ class HardwareMonitor:
         self.last_cup_status = None
         self.handshake_complete = False
     
-    def start_mock_server(self):
+    def get_rpi_device_id(self):
+        """Get Device ID based on RPI MAC address"""
+        try:
+            # Try to get MAC from sysfs (most reliable on RPI)
+            if os.path.exists('/sys/class/net/wlan0/address'):
+                with open('/sys/class/net/wlan0/address', 'r') as f:
+                    mac = f.read().strip().upper().replace(':', '')
+                    return f"UK_{mac}"
+            
+            if os.path.exists('/sys/class/net/eth0/address'):
+                with open('/sys/class/net/eth0/address', 'r') as f:
+                    mac = f.read().strip().upper().replace(':', '')
+                    return f"UK_{mac}"
+            
+            # Fallback to uuid
+            import uuid
+            mac_num = uuid.getnode()
+            mac = ':'.join(['{:02x}'.format((mac_num >> ele) & 0xff) for ele in range(0,8*6,8)][::-1])
+            mac = mac.upper().replace(':', '')
+            return f"UK_{mac}"
+            
+        except Exception as e:
+            print(f"Error getting MAC address: {e}")
+            return "UK_14335C5D48C8" # Fallback to hardcoded
+
+    def start_polling_server(self):
         """Start polling_server2.py to receive ESP32 data"""
         try:
             print(f"🚀 Starting polling_server2.py...")
@@ -55,7 +83,8 @@ class HardwareMonitor:
             for i in range(10):
                 time.sleep(0.5)
                 try:
-                    response = requests.get(f"{self.api_base_url}/test/devices", timeout=1)
+                    # Check server status
+                    response = requests.get(f"{self.api_base_url}/api/status", timeout=1)
                     if response.status_code == 200:
                         print(f"✓ polling_server2.py is running and responding at {self.api_base_url}")
                         print(f"✓ Waiting for ESP32 handshake...")
@@ -74,48 +103,37 @@ class HardwareMonitor:
             return False
     
     def wait_for_handshake(self):
-        """Send handshake request continuously until accepted - runs in background"""
-        print(f"⏳ Sending handshake requests for device {self.device_id}...")
+        """Wait for ESP32 to connect to the server"""
+        print(f"⏳ Waiting for ANY device to connect...")
         
         def handshake_loop():
             while not self.handshake_complete and self.running:
                 try:
-                    # Send handshake request
-                    url = f"{self.api_base_url}/api/device/handshake"
-                    payload = {
-                        "messageType": "handshake",
-                        "version": "1.0",
-                        "request": {
-                            "deviceId": self.device_id,
-                            "deviceType": "hardware_controller",
-                            "firmwareVersion": "2.1.5"
-                        }
-                    }
-                    
-                    response = requests.post(url, json=payload, timeout=2)
+                    # Check if device is connected
+                    url = f"{self.api_base_url}/api/devices"
+                    response = requests.get(url, timeout=2)
                     
                     if response.status_code == 200:
                         data = response.json()
-                        status = data.get('response', {}).get('status')
+                        devices = data.get('devices', [])
                         
-                        if status == 'accepted':
+                        # If any device is connected, accept it
+                        if len(devices) > 0:
+                            # Pick the first device found
+                            device = devices[0]
+                            found_id = device.get('deviceId')
+                            
                             self.handshake_complete = True
-                            session_id = data.get('response', {}).get('sessionId', 'N/A')
-                            print(f"✓ Handshake accepted! Device ID: {self.device_id}")
-                            print(f"✓ Session ID: {session_id}")
+                            self.device_id = found_id
+                            print(f"✓ Device connected! ID: {self.device_id}")
                             return
-                        else:
-                            print(f"⚠️ Handshake status: {status}")
-                    else:
-                        print(f"⚠️ Handshake failed with status code: {response.status_code}")
                         
                 except Exception as e:
-                    # Connection failed - server not ready yet
                     pass
                 
                 time.sleep(2)  # Try every 2 seconds
         
-        # Start handshake in background thread
+        # Start monitoring in background thread
         handshake_thread = threading.Thread(target=handshake_loop, daemon=True)
         handshake_thread.start()
     
@@ -125,7 +143,7 @@ class HardwareMonitor:
             return
         
         # Start polling server
-        server_started = self.start_mock_server()
+        server_started = self.start_polling_server()
         
         if not server_started:
             print("⚠️ Hardware monitoring disabled (no polling server)")
@@ -167,26 +185,29 @@ class HardwareMonitor:
                 time.sleep(5)  # Wait longer on error
     
     def _fetch_temperature(self):
-        """Fetch temperature from hardware"""
+        """Fetch temperature from hardware history"""
         try:
             if not self.api_base_url or not self.device_id:
                 return None
             
-            url = f"{self.api_base_url}/api/device/health"
-            payload = {
-                "messageType": "health_check",
-                "version": "1.0",
-                "deviceId": self.device_id,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            response = requests.post(url, json=payload, timeout=3)
+            # Get history instead of posting empty health check
+            url = f"{self.api_base_url}/api/device/{self.device_id}/history"
+            response = requests.get(url, timeout=3)
             
             if response.status_code == 200:
                 data = response.json()
-                pt100_data = data.get('checks', {}).get('sensor:pt100_sensor_01', [{}])[0]
-                temp = pt100_data.get('observedValue')
-                return temp
+                health_list = data.get('health', [])
+                
+                if health_list:
+                    # Get latest health data
+                    latest = health_list[-1].get('data', {})
+                    checks = latest.get('checks', {})
+                    
+                    # Look for PT100 sensor
+                    pt100_list = checks.get('sensor:pt100_sensor_01', [])
+                    if pt100_list:
+                        temp = pt100_list[0].get('observedValue')
+                        return temp
             
         except:
             pass
@@ -210,36 +231,33 @@ class HardwareMonitor:
             if not self.api_base_url or not self.device_id:
                 return None
             
-            url = f"{self.api_base_url}/api/device/health"
-            payload = {
-                "messageType": "health_check",
-                "version": "1.0",
-                "deviceId": self.device_id,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            response = requests.post(url, json=payload, timeout=3)
+            # Get history
+            url = f"{self.api_base_url}/api/device/{self.device_id}/history"
+            response = requests.get(url, timeout=3)
             
             if response.status_code == 200:
                 data = response.json()
-                checks = data.get('checks', {})
+                health_list = data.get('health', [])
                 
-                # Look for cup sensor
-                for key in ['sensor:cup_sensor_01', 'cup_sensor_01']:
-                    if key in checks:
-                        cup_data = checks[key]
-                        if isinstance(cup_data, list) and len(cup_data) > 0:
-                            cup_data = cup_data[0]
-                        
-                        cup_value = cup_data.get('observedValue', 'no_cup')
-                        
-                        # Determine if cup is present
-                        is_present = cup_value in ['cup_present', 'cup', 'present', 'yes', 'true', '1']
-                        self.last_cup_status = is_present
-                        return is_present
+                if health_list:
+                    latest = health_list[-1].get('data', {})
+                    checks = latest.get('checks', {})
                 
-                # Default: no cup
-                self.last_cup_status = False
+                    # Look for cup sensor
+                    for key in ['sensor:cup_sensor_01', 'cup_sensor_01']:
+                        if key in checks:
+                            cup_data = checks[key]
+                            if isinstance(cup_data, list) and len(cup_data) > 0:
+                                cup_data = cup_data[0]
+                            
+                            cup_value = cup_data.get('observedValue', 'no_cup')
+                            
+                            # Determine if cup is present
+                            is_present = cup_value in ['cup_present', 'cup', 'present', 'yes', 'true', '1']
+                            self.last_cup_status = is_present
+                            return is_present
+                
+                # Default: no cup (if no data found)
                 return False
             
         except Exception as e:
@@ -250,6 +268,117 @@ class HardwareMonitor:
     def get_temperature(self):
         """Get last known temperature"""
         return self.last_temperature
+    
+    def is_device_connected(self):
+        """Check if device is connected via handshake or recent activity"""
+        # Always check server for active devices
+        try:
+            url = f"{self.api_base_url}/api/devices"
+            response = requests.get(url, timeout=2)
+            if response.status_code == 200:
+                devices = response.json().get('devices', [])
+                if len(devices) > 0:
+                    # If we have a device, ensure our ID matches the active one
+                    # This handles if the device ID changed (e.g. different ESP32 connected)
+                    active_device = devices[0]
+                    active_id = active_device.get('deviceId')
+                    
+                    if active_id and active_id != self.device_id:
+                        print(f"🔄 Device ID changed from {self.device_id} to {active_id}")
+                        self.device_id = active_id
+                    
+                    # Mark handshake as complete if we found a device
+                    if not self.handshake_complete:
+                        self.handshake_complete = True
+                        
+                    return True
+                else:
+                    # No devices listed
+                    return False
+        except:
+            pass
+            
+        return False
+
+    def get_latest_error(self):
+        """Check for hardware errors from the latest health check"""
+        try:
+            if not self.api_base_url or not self.device_id:
+                return "Internal Error: Configuration Missing"
+                
+            # Check connection first
+            if not self.is_device_connected():
+                return "Hardware Not Connected"
+            
+            # Get history
+            url = f"{self.api_base_url}/api/device/{self.device_id}/history"
+            response = requests.get(url, timeout=3)
+            
+            if response.status_code == 200:
+                data = response.json()
+                health_list = data.get('health', [])
+                
+                if health_list:
+                    latest = health_list[-1].get('data', {})
+                    checks = latest.get('checks', {})
+                    
+                    # Iterate through all checks to find failures
+                    for comp_key, check_list in checks.items():
+                        for check in check_list:
+                            status = check.get('status', 'pass').lower()
+                            if status != 'pass':
+                                # Found an error!
+                                error_msg = check.get('message') or check.get('errorMessage')
+                                if not error_msg:
+                                    # Try to construct message from value/unit or codes
+                                    comp_id = check.get('componentId', 'Unknown Component')
+                                    code = check.get('statusCode')
+                                    value = check.get('observedValue')
+                                    
+                                    if code == 700:
+                                        error_msg = f"Temperature Low ({value}°C)"
+                                    elif code == 701:
+                                        error_msg = f"Temperature Critical ({value}°C)"
+                                    elif code == 704:
+                                        error_msg = "Cup not detected"
+                                    elif code == 705:
+                                        error_msg = "Flow Failure Detected"
+                                    elif code == 706:
+                                        error_msg = "Pump Fault Detected"
+                                    elif code == 707:
+                                        error_msg = "Heater Fault Detected"
+                                    elif code == 711:
+                                        error_msg = "Pump Timeout: Exceeded Duration"
+                                    elif code == 600:
+                                        error_msg = "WiFi Disconnected (Reported)"
+                                    else:
+                                        error_msg = f"Hardware Error: {comp_id} status is {status}"
+                                
+                                return error_msg
+                    
+                    # Check for top-level error message types (Section 9.1)
+                    if latest.get('messageType') == 'error':
+                        error_obj = latest.get('error', {})
+                        code = latest.get('statusCode') or error_obj.get('code')
+                        msg = error_obj.get('message', 'Unknown Error')
+                        
+                        if code == 600 or code == 'WIFI_DISCONNECTED':
+                            return f"WiFi Error: {msg}"
+                        else:
+                            return f"Device Error ({code}): {msg}"
+                                
+                    # Also check for explicit offline state with reason
+                    machine_state = latest.get('machineState', 'ONLINE')
+                    if machine_state == 'OFFLINE':
+                        reason = latest.get('reason', 'Unknown reason')
+                        details = latest.get('details', {})
+                        err_msg = details.get('errorMessage') or reason
+                        return f"Machine Offline: {err_msg}"
+                        
+        except Exception as e:
+            print(f"Error checking for hardware errors: {e}")
+            
+        return None
 
 
 # Global instance
