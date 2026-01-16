@@ -4,73 +4,17 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.image import Image
 from kivy.uix.widget import Widget
-from kivy.graphics import Color, RoundedRectangle, Line, Ellipse, Triangle
+from kivy.graphics import Color, RoundedRectangle, Line
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.popup import Popup
 from kivy.uix.floatlayout import FloatLayout
 from kivy.core.window import Window
-from kivy.animation import Animation
 from kivy.clock import Clock
-import math
 import threading
 import time
 import os
 import requests
 from utils.rfid_reader import rfid_reader
-
-
-class ModernButton(Button):
-    """Modern button with rounded corners and hover effects"""
-    
-    def __init__(self, bg_color=(0.7, 0.9, 0.8, 1), text_color=(0.2, 0.2, 0.2, 1), **kwargs):
-        super().__init__(**kwargs)
-        self.background_color = (0, 0, 0, 0)
-        self.background_normal = ''
-        self.bg_color = bg_color
-        self.text_color = text_color
-        self.is_pressed = False
-        self.original_size = None
-        self.bind(size=self.update_graphics, pos=self.update_graphics)
-        
-    def update_graphics(self, *args):
-        self.canvas.before.clear()
-        with self.canvas.before:
-            # Shadow effect
-            Color(0, 0, 0, 0.1)
-            RoundedRectangle(pos=(self.pos[0] + 2, self.pos[1] - 2), size=self.size, radius=[20])
-            
-            # Main button background
-            Color(*self.bg_color)
-            RoundedRectangle(pos=self.pos, size=self.size, radius=[20])
-        
-        # Update text color
-        self.color = self.text_color
-    
-    def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos):
-            self.is_pressed = True
-            if not self.original_size:
-                self.original_size = self.size[:]
-            
-            # Scale button slightly on press
-            Animation.cancel_all(self)
-            press_size = (self.original_size[0] * 1.05, self.original_size[1] * 1.05)
-            Animation(size=press_size, duration=0.1).start(self)
-            
-            return super().on_touch_down(touch)
-        return False
-    
-    def on_touch_up(self, touch):
-        if self.is_pressed:
-            self.is_pressed = False
-            
-            # Return to original size
-            if self.original_size:
-                Animation.cancel_all(self)
-                Animation(size=self.original_size, duration=0.15, t='out_back').start(self)
-            
-            return super().on_touch_up(touch)
-        return False
 
 
 class PremiumPaymentCard(Widget):
@@ -117,39 +61,6 @@ class PremiumPaymentCard(Widget):
             Color(1, 1, 1, 0.15)
             Line(rounded_rectangle=(self.pos[0] + 2, self.pos[1] + 2, 
                                   self.size[0] - 4, self.size[1] - 4, 28), width=1)
-
-
-class CenterDividerWidget(Widget):
-    """Custom widget to draw the center divider line and arrow"""
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.bind(size=self.update_graphics, pos=self.update_graphics)
-        
-    def update_graphics(self, *args):
-        self.canvas.clear()
-        with self.canvas:
-            # Draw center vertical line
-            Color(0.6, 0.6, 0.6, 1)  # Gray color for the line
-            Line(points=[self.center_x, self.y, self.center_x, self.top], width=2)
-            
-            # Draw arrow pointing to the right (RFID side)
-            arrow_y = self.center_y + 50  # Position arrow slightly above center
-            arrow_size = 20
-            
-            # Arrow shaft (horizontal line)
-            Line(points=[self.center_x + 20, arrow_y, self.center_x + 60, arrow_y], width=3)
-            
-            # Arrow head (triangle pointing right)
-            Color(0.4, 0.7, 0.4, 1)  # Green color for arrow
-            arrow_points = [
-                self.center_x + 60, arrow_y,  # tip
-                self.center_x + 45, arrow_y + arrow_size//2,  # top back
-                self.center_x + 45, arrow_y - arrow_size//2   # bottom back
-            ]
-            # Draw filled triangle using lines
-            Line(points=arrow_points + [arrow_points[0], arrow_points[1]], width=2)
-            Line(points=[arrow_points[0], arrow_points[1], arrow_points[2], arrow_points[3], arrow_points[4], arrow_points[5]], width=2)
 
 
 class CupsCounterWidget(BoxLayout):
@@ -443,7 +354,7 @@ class RFIDInstructionPopup(Popup):
         
         # Countdown timer label
         self.countdown_label = Label(
-            text='Auto-closing in 3 seconds...',
+            text='Auto-closing in 2 seconds...',
             font_size='16sp',
             color=(0.7, 0.7, 0.7, 1),
             halign='center',
@@ -467,7 +378,7 @@ class RFIDInstructionPopup(Popup):
         content.bind(size=self.update_bg_rect, pos=self.update_bg_rect)
         
         # Auto-close timer variables
-        self.countdown_time = 3
+        self.countdown_time = 2
         self.countdown_event = None
     
     def update_bg_rect(self, *args):
@@ -481,8 +392,8 @@ class RFIDInstructionPopup(Popup):
         self.start_countdown()
     
     def start_countdown(self):
-        """Start the 3-second countdown timer"""
-        self.countdown_time = 3
+        """Start the 2-second countdown timer"""
+        self.countdown_time = 2
         self.update_countdown_display()
         self.countdown_event = Clock.schedule_interval(self.update_countdown, 1)
     
@@ -815,6 +726,10 @@ class PaymentMethodPage(Screen):
         self.rfid_popup = None
         self.rfid_instruction_popup = None
         
+        # Machine status monitoring
+        self.status_check_timer = None
+        self.status_check_interval = 3  # Check every 5 seconds
+        
         # RFID card detection variables
         self.rfid_listening = True
         self.last_rfid_scan_time = 0
@@ -892,9 +807,32 @@ class PaymentMethodPage(Screen):
         # Left side - UPI section as clickable card
         from kivy.uix.button import ButtonBehavior
         
-        # Create clickable UPI card container
+        # Create clickable UPI card container with explicit touch handling
         class ClickableCard(ButtonBehavior, AnchorLayout):
-            pass
+            def on_touch_down(self, touch):
+                # Only handle touch if it's within the actual card bounds (first child)
+                if not self.collide_point(*touch.pos):
+                    return False
+                
+                # Check if touch is within the card widget itself (not just container)
+                if self.children:
+                    # Get the card widget (PremiumPaymentCard is the first child)
+                    for child in self.children:
+                        if hasattr(child, '__class__') and 'PremiumPaymentCard' in child.__class__.__name__:
+                            if not child.collide_point(*touch.pos):
+                                return False  # Touch is outside the actual card
+                            break
+                
+                # Ensure touch is processed only by this button
+                touch.grab(self)
+                return super(ClickableCard, self).on_touch_down(touch)
+            
+            def on_touch_up(self, touch):
+                # Only handle release if this widget grabbed the touch
+                if touch.grab_current is not self:
+                    return False
+                touch.ungrab(self)
+                return super(ClickableCard, self).on_touch_up(touch)
         
         upi_card_container = ClickableCard(anchor_x='center', anchor_y='center', size_hint_x=0.45)
         upi_card_container.bind(on_press=self.on_upi_selected)
@@ -957,9 +895,32 @@ class PaymentMethodPage(Screen):
         content_layout.add_widget(Widget(size_hint_x=0.05))
         
         # Right side - RFID section (keeps RFID listening functionality)
-        # Create clickable RFID card container
+        # Create clickable RFID card container with explicit touch handling
         class ClickableRFIDCard(ButtonBehavior, AnchorLayout):
-            pass
+            def on_touch_down(self, touch):
+                # Only handle touch if it's within the actual card bounds
+                if not self.collide_point(*touch.pos):
+                    return False
+                
+                # Check if touch is within the card widget itself (not just container)
+                if self.children:
+                    # Get the card widget (PremiumPaymentCard is the first child)
+                    for child in self.children:
+                        if hasattr(child, '__class__') and 'PremiumPaymentCard' in child.__class__.__name__:
+                            if not child.collide_point(*touch.pos):
+                                return False  # Touch is outside the actual card
+                            break
+                
+                # Ensure touch is processed only by this button
+                touch.grab(self)
+                return super(ClickableRFIDCard, self).on_touch_down(touch)
+            
+            def on_touch_up(self, touch):
+                # Only handle release if this widget grabbed the touch
+                if touch.grab_current is not self:
+                    return False
+                touch.ungrab(self)
+                return super(ClickableRFIDCard, self).on_touch_up(touch)
         
         rfid_card_container = ClickableRFIDCard(anchor_x='center', anchor_y='center', size_hint_x=0.45)
         rfid_card_container.bind(on_press=self.on_rfid_clicked)
@@ -1047,6 +1008,7 @@ class PaymentMethodPage(Screen):
     
     def on_upi_selected(self, instance):
         """Navigate to selection page using cached cups count (no API calls needed)"""
+        print(f"🔵 DEBUG: UPI button pressed! Instance: {instance}")
         # Use the cached cups count from the continuously refreshed counter
         if hasattr(self, 'cups_counter') and hasattr(self.cups_counter, 'cups_count'):
             cups_count = self.cups_counter.cups_count
@@ -1080,6 +1042,7 @@ class PaymentMethodPage(Screen):
     
     def on_rfid_clicked(self, instance):
         """Show instruction popup when RFID card is clicked"""
+        print(f"🟠 DEBUG: RFID button pressed! Instance: {instance}")
         print("RFID card clicked - showing instruction popup")
         
         # Close any existing instruction popup
@@ -1109,7 +1072,18 @@ class PaymentMethodPage(Screen):
         app = App.get_running_app()
         
         try:
-            # Set loading state
+            # Use local cups count if already initialized
+            if hasattr(app, 'cups_count_initialized') and app.cups_count_initialized and hasattr(app, 'local_cups_count') and app.local_cups_count is not None:
+                print(f"✅ Using local cups count: {app.local_cups_count}")
+                Clock.schedule_once(lambda dt: self.update_cups_display(app.local_cups_count))
+                
+                if app.local_cups_count <= 0:
+                    print("No cups available (local), navigating to machine empty page")
+                    Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
+                return
+            
+            # Only fetch from API if local count not initialized
+            print("🔄 Local cups count not initialized, fetching from API...")
             Clock.schedule_once(lambda dt: self.cups_counter.set_loading())
             
             # Check machine status first
@@ -1131,11 +1105,13 @@ class PaymentMethodPage(Screen):
                         Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
                         return
                 
-                # Check cups count
+                # Check cups count and store locally
                 cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)
                 
                 if cups_data and cups_data.get("success", False):
                     cups_count = cups_data.get("cups", 0)
+                    # Store locally
+                    Clock.schedule_once(lambda dt: app.set_local_cups_count(cups_count))
                     Clock.schedule_once(lambda dt: self.update_cups_display(cups_count))
                     
                     if cups_count <= 0:
@@ -1143,9 +1119,6 @@ class PaymentMethodPage(Screen):
                         print("No cups available, navigating to machine empty page")
                         Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
                         return
-                    
-                    # Machine is online and has cups - start periodic refresh
-                    Clock.schedule_once(lambda dt: self.start_cups_refresh_timer())
                 else:
                     # API call failed - show error
                     Clock.schedule_once(lambda dt: self.cups_counter.set_error())
@@ -1158,54 +1131,25 @@ class PaymentMethodPage(Screen):
             Clock.schedule_once(lambda dt: self.cups_counter.set_error())
     
     def load_cups_count(self, show_loading=False):
-        """Load cups count from API"""
-        # Only set loading state if explicitly requested (initial load)
-        if show_loading:
-            self.cups_counter.set_loading()
-        
-        # Load cups count in a separate thread
-        threading.Thread(target=self.fetch_cups_count, daemon=True).start()
-    
-    def fetch_cups_count(self):
-        """Fetch cups count from API in background thread"""
+        """Load cups count - now uses local counter instead of API"""
         from kivy.app import App
         app = App.get_running_app()
         
-        try:
-            # Call API to get remaining cups and check machine status
-            if hasattr(app, 'api_client') and hasattr(app, 'MACHINE_ID'):
-                # Check machine status first
-                status_data = app.api_client.check_machine_status(app.MACHINE_ID)
-                
-                if status_data and status_data.get("success", False):
-                    # Get status from nested data object
-                    data = status_data.get("data", {})
-                    machine_status = data.get("status", "offline")
-                    is_online = machine_status.lower() == "online"
-                    
-                    if not is_online:
-                        # Machine is offline - navigate to machine empty page
-                        print("Machine went offline, navigating to machine empty page")
-                        Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
-                        return
-                
-                # Get cups count
-                cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)
-                
-                # Schedule UI update on main thread
-                if cups_data and cups_data.get("success", False):
-                    cups_count = cups_data.get("cups", 0)
-                    Clock.schedule_once(lambda dt: self.update_cups_display(cups_count))
-                else:
-                    # API call failed - show error
-                    Clock.schedule_once(lambda dt: self.cups_counter.set_error())
-            else:
-                # No API client - show error
-                Clock.schedule_once(lambda dt: self.cups_counter.set_error())
-                
-        except Exception as e:
-            print(f"Error fetching cups count: {e}")
-            # On error, show error state
+        # Use local cups count if available
+        if hasattr(app, 'local_cups_count') and app.local_cups_count is not None:
+            self.update_cups_display(app.local_cups_count)
+        else:
+            print("⚠️ Local cups count not available")
+    
+    def fetch_cups_count(self):
+        """Deprecated - now uses local counter. Use app.get_local_cups_count() instead"""
+        from kivy.app import App
+        app = App.get_running_app()
+        
+        # Use local cups count
+        if hasattr(app, 'local_cups_count') and app.local_cups_count is not None:
+            Clock.schedule_once(lambda dt: self.update_cups_display(app.local_cups_count))
+        else:
             Clock.schedule_once(lambda dt: self.cups_counter.set_error())
     
     def update_cups_display(self, cups_count):
@@ -1218,8 +1162,15 @@ class PaymentMethodPage(Screen):
             Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
     
     def refresh_cups_count(self):
-        """Refresh cups count (can be called from other parts of the app)"""
-        self.load_cups_count()
+        """Refresh cups count display using local counter"""
+        from kivy.app import App
+        app = App.get_running_app()
+        
+        # Use local cups count if available
+        if hasattr(app, 'local_cups_count') and app.local_cups_count is not None:
+            self.update_cups_display(app.local_cups_count)
+        else:
+            print("⚠️ Local cups count not available")
     
     def start_cups_refresh_timer(self):
         """Start periodic timer to refresh cups count every 5 seconds"""
@@ -1249,9 +1200,9 @@ class PaymentMethodPage(Screen):
             print("🏷️ RFID listening disabled, ignoring card")
             return
         
-        # Check for 5-second cooldown to prevent multiple taps
+        # Check for 3-second cooldown to prevent multiple taps (reduced from 5)
         current_time = time.time()
-        if current_time - self.last_rfid_scan_time < 5:
+        if current_time - self.last_rfid_scan_time < 3:
             print(f"🏷️ RFID cooldown active, ignoring card (last scan: {current_time - self.last_rfid_scan_time:.1f}s ago)")
             return
         
@@ -1270,8 +1221,9 @@ class PaymentMethodPage(Screen):
         self.stop_rfid_polling()
         print("🏷️ Stopped polling for authentication")
         
-        # Re-enable RFID listening and restart polling after 5 seconds
-        Clock.schedule_once(lambda dt: self.restart_rfid_after_auth(), 5)
+        # Schedule restart in case of failure (will be cancelled if successful)
+        # Re-enable RFID listening and restart polling after 3 seconds (reduced from 5)
+        self.restart_rfid_event = Clock.schedule_once(lambda dt: self.restart_rfid_after_auth(), 3)
         
         # Check machine status first, then authenticate card
         threading.Thread(target=self.authenticate_rfid_card, daemon=True).start()
@@ -1370,8 +1322,17 @@ class PaymentMethodPage(Screen):
             # Set default cup count for RFID payment (1 cup)
             app.set_selected_cups(1)
             
-            # Reduce cups count for RFID payment
-            app.reduce_cups_after_payment()
+            # DON'T reduce cups here - cups will be reduced when user clicks "Confirm to Dispense" button
+            # Cups reduction happens in place_cup_page.py -> on_continue_pressed() -> app.reduce_one_cup()
+            
+            # IMPORTANT: Cancel scheduled restart since authentication succeeded
+            if hasattr(self, 'restart_rfid_event') and self.restart_rfid_event:
+                self.restart_rfid_event.cancel()
+                self.restart_rfid_event = None
+                print("🏷️ Cancelled RFID restart - authentication successful")
+            
+            # Keep RFID disabled - user is proceeding to dispensing
+            # Polling will be stopped by on_leave() when navigating away
             
             # Navigate to dispensing after showing success
             Clock.schedule_once(lambda dt: self.navigate_to_dispensing(), 1.5)
@@ -1414,19 +1375,22 @@ class PaymentMethodPage(Screen):
     def send_maintenance_solenoid_command(self, duration_ms=10000):
         """Send solenoid control command for maintenance card"""
         try:
+            # Get device ID from central config
+            from config import DEVICE_ID
+            
             print("\n" + "="*80)
             print("🔧 SOLENOID COMMAND - MAINTENANCE MODE")
             print("="*80)
             print(f"🔧 Duration: {duration_ms}ms ({duration_ms/1000}s)")
             print(f"🔧 Command ID: cmd_solenoid_001")
-            print(f"🔧 Device ID: UK_14335C5D48C8")
+            print(f"🔧 Device ID: {DEVICE_ID}")
             
             # API endpoint (using localhost for testing)
             # TODO: Change to dynamic IP later for production
             url = "http://localhost:5000/api/device/command"
             
-            # Device ID (hardcoded as per requirement)
-            device_id = "UK_14335C5D48C8"
+            # Device ID from central config
+            device_id = DEVICE_ID
             
             # Prepare the request payload
             payload = {
@@ -1495,6 +1459,70 @@ class PaymentMethodPage(Screen):
         """Navigate to machine empty page when cups are 0"""
         self.manager.current = 'machine_empty'
     
+    def start_status_monitoring(self):
+        """Start continuous machine status monitoring"""
+        # Stop any existing timer first
+        self.stop_status_monitoring()
+        
+        # Schedule periodic check every 5 seconds
+        self.status_check_timer = Clock.schedule_interval(
+            lambda dt: self.check_machine_status_background(), 
+            self.status_check_interval
+        )
+        print(f"🔍 Started machine status monitoring (every {self.status_check_interval} seconds)")
+    
+    def stop_status_monitoring(self):
+        """Stop continuous machine status monitoring"""
+        if self.status_check_timer:
+            self.status_check_timer.cancel()
+            self.status_check_timer = None
+            print("🛑 Stopped machine status monitoring")
+    
+    def check_machine_status_background(self):
+        """Check machine status in background thread"""
+        threading.Thread(target=self._do_status_check, daemon=True).start()
+    
+    def _do_status_check(self):
+        """Perform machine status check"""
+        from kivy.app import App
+        app = App.get_running_app()
+        
+        try:
+            if hasattr(app, 'api_client') and hasattr(app, 'MACHINE_ID'):
+                # Check machine status
+                status_data = app.api_client.check_machine_status(app.MACHINE_ID)
+                
+                if status_data and status_data.get("success", False):
+                    data = status_data.get("data", {})
+                    machine_status = data.get("status", "offline")
+                    is_online = machine_status.lower() == "online"
+                    
+                    if not is_online:
+                        # Machine went offline - navigate to machine empty page
+                        print("⚠️ Machine went OFFLINE - navigating to machine empty page")
+                        Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0)
+                        return
+                
+                # Also check cups count
+                cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)
+                if cups_data and cups_data.get("success", False):
+                    cups_count = cups_data.get("cups", 0)
+                    
+                    # Update local count
+                    Clock.schedule_once(lambda dt: app.set_local_cups_count(cups_count))
+                    
+                    if cups_count <= 0:
+                        # Cups ran out - navigate to machine empty page
+                        print("⚠️ Cups ran out (0 remaining) - navigating to machine empty page")
+                        Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0)
+                        return
+                    
+                    # Update display if cups count changed
+                    Clock.schedule_once(lambda dt: self.update_cups_display(cups_count))
+                    
+        except Exception as e:
+            print(f"Status check error: {e}")
+    
     def show_offline_popup_for_rfid(self):
         """Show offline popup for RFID"""
         if not self.offline_popup or not self.offline_popup._window:
@@ -1513,39 +1541,50 @@ class PaymentMethodPage(Screen):
         # Check machine status and cups count before showing page
         threading.Thread(target=self.check_machine_availability, daemon=True).start()
         
+        # Note: Global status monitoring in main_app.py handles continuous checks
+        
         # Enable RFID listening
         self.rfid_listening = True
         
-        # Initialize AES auth handler if not already done
+        # Check RFID auth handler status
         from kivy.app import App
         app = App.get_running_app()
-        if not hasattr(app, 'rfid_auth_handler'):
-            print("🔐 Initializing RFID AES Auth Handler...")
-            from utils.rfid_aes_auth import RFIDAESAuth
-            app.rfid_auth_handler = RFIDAESAuth(
-                base_url="https://www.ukteawallet.com",
-                machine_id="UK_0007"
-            )
-            if app.rfid_auth_handler.reader_active:
-                print("✓ RFID Auth Handler initialized successfully")
-            else:
-                print("❌ RFID Auth Handler initialization failed - reader not active")
-        else:
-            print("✓ RFID Auth Handler already initialized")
         
-        # Start polling for RFID cards
+        if not hasattr(app, 'rfid_auth_handler') or app.rfid_auth_handler is None:
+            # Handler not initialized or failed at startup, try to initialize now
+            print("🔐 RFID Auth Handler not initialized, attempting initialization...")
+            from utils.rfid_aes_auth import RFIDAESAuth
+            try:
+                app.rfid_auth_handler = RFIDAESAuth(
+                    base_url="https://www.ukteawallet.com",
+                    machine_id="UK_0007"
+                )
+                if app.rfid_auth_handler.reader_active:
+                    print("✅ RFID Auth Handler initialized successfully")
+                else:
+                    print("⚠️ RFID Auth Handler initialization failed - reader not active")
+                    print("⚠️ Please check if RFID reader is connected")
+            except Exception as e:
+                print(f"❌ Failed to initialize RFID Auth Handler: {e}")
+                app.rfid_auth_handler = None
+        elif hasattr(app.rfid_auth_handler, 'reader_active') and app.rfid_auth_handler.reader_active:
+            print("✅ RFID Auth Handler already initialized and active")
+        else:
+            print("⚠️ RFID Auth Handler exists but reader is not active")
+            print("⚠️ Please check if RFID reader is connected")
+        
+        # Start polling for RFID cards (will work if reader is active)
         self.start_rfid_polling()
     
     def on_leave(self):
         """Called when leaving the screen"""
-        # Stop periodic cups count refresh
-        self.stop_cups_refresh_timer()
-        
         # Disable RFID listening
         self.rfid_listening = False
         
         # Stop RFID polling
         self.stop_rfid_polling()
+        
+        # Note: Global status monitoring in main_app.py continues running
     
     def start_rfid_polling(self):
         """Start polling for RFID cards"""
@@ -1582,8 +1621,14 @@ class PaymentMethodPage(Screen):
         app = App.get_running_app()
         
         try:
-            if not hasattr(app, 'rfid_auth_handler'):
-                print("⚠️ RFID auth handler not initialized")
+            if not hasattr(app, 'rfid_auth_handler') or app.rfid_auth_handler is None:
+                # Handler not initialized
+                self._checking_card = False
+                return
+            
+            if not hasattr(app.rfid_auth_handler, 'reader_active') or not app.rfid_auth_handler.reader_active:
+                # Reader not active
+                self._checking_card = False
                 return
             
             # Try to read card UID

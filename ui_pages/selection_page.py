@@ -12,12 +12,13 @@ from kivy.clock import Clock
 from kivy.uix.popup import Popup
 from kivy.uix.floatlayout import FloatLayout
 import os
+import time
 
 
 class SimpleButton(Button):
     """Simple button without animations or effects"""
     
-    def __init__(self, bg_color=(0.851, 0.647, 0.125, 1), **kwargs):
+    def __init__(self, bg_color=(0.949, 0.6, 0.0, 1), **kwargs):
         super().__init__(**kwargs)
         self.background_color = (0, 0, 0, 0)
         self.background_normal = ''
@@ -113,7 +114,7 @@ class MaxCupsLimitPopup(Popup):
         
         # Message
         message_label = Label(
-            text="Maximum 5 cups is allowed\nfor single transaction",
+            text="Maximum 4 cups is allowed\nfor single transaction",
             font_size='20sp',
             color=(0.5, 0.5, 0.5, 1),
             halign='center',
@@ -197,7 +198,11 @@ class SelectionPage(Screen):
         super(SelectionPage, self).__init__(**kwargs)
         self.number_of_cups = 1
         self.max_cups = 10  # Default maximum, will be updated from API
-        self.max_cups_per_transaction = 5  # Maximum 5 cups per transaction
+        self.max_cups_per_transaction = 4  # Maximum 4 cups per transaction
+        
+        # Touch debouncing variables for Raspberry Pi touchscreen
+        self.last_button_press_time = 0
+        self.button_cooldown = 0.2  # 200ms cooldown to prevent multiple rapid touches
         
         # Inactivity timer variables
         self.inactivity_timeout = 10  # 10 seconds
@@ -278,14 +283,14 @@ class SelectionPage(Screen):
         image_path = os.path.join('assets', 'cup.png')
         
         if os.path.exists(image_path):
-            self.cup_image = Image(
+            cup_image = Image(
                 source=image_path,
                 size_hint=(None, None), 
                 size=(250, 250),
                 allow_stretch=True,
                 keep_ratio=True
             )
-            image_section.add_widget(self.cup_image)
+            image_section.add_widget(cup_image)
         
         main_layout.add_widget(image_section)
         
@@ -309,7 +314,7 @@ class SelectionPage(Screen):
             color=(1, 1, 1, 1),
             size_hint=(None, None),
             size=(100, 70),
-            bg_color=(0.944, 0.679, 0.166, 1)  # Orange/gold color
+            bg_color=(0.949, 0.6, 0.0, 1)  # Orange color
         )
         self.minus_btn.bind(on_press=self.decrease_cups)
         counter_box.add_widget(self.minus_btn)
@@ -329,7 +334,7 @@ class SelectionPage(Screen):
             color=(1, 1, 1, 1),
             size_hint=(None, None),
             size=(100, 70),
-            bg_color=(0.944, 0.679, 0.166, 1)  # Orange/gold color
+            bg_color=(0.949, 0.6, 0.0, 1)  # Orange color
         )
         self.plus_btn.bind(on_press=self.increase_cups)
         counter_box.add_widget(self.plus_btn)
@@ -350,7 +355,7 @@ class SelectionPage(Screen):
             font_size='24sp',
             bold=True,
             color=(1, 1, 1, 1),
-            bg_color=(0.944, 0.679, 0.166, 1)  # Orange/gold color
+            bg_color=(0.949, 0.6, 0.0, 1)  # Orange color
         )
         self.confirm_btn.bind(on_press=self.on_confirm_pay)
         button_section.add_widget(self.confirm_btn)
@@ -367,6 +372,13 @@ class SelectionPage(Screen):
         self.rect.pos = instance.pos
 
     def increase_cups(self, instance):
+        # Touch debouncing - prevent multiple rapid touches on Raspberry Pi
+        current_time = time.time()
+        if current_time - self.last_button_press_time < self.button_cooldown:
+            print(f"🚫 Button cooldown active, ignoring touch (last press: {current_time - self.last_button_press_time:.3f}s ago)")
+            return  # Ignore rapid touches
+        self.last_button_press_time = current_time
+        
         # Reset inactivity timer on user interaction
         self.reset_inactivity_timer()
         
@@ -377,17 +389,26 @@ class SelectionPage(Screen):
         elif self.number_of_cups < self.max_cups:
             self.number_of_cups += 1
             self.number_display.set_number(self.number_of_cups)
+            print(f"✅ Increased cups to {self.number_of_cups}")
         else:
             # Show popup when trying to exceed available cups
             self.show_cups_limit_popup()
 
     def decrease_cups(self, instance):
+        # Touch debouncing - prevent multiple rapid touches on Raspberry Pi
+        current_time = time.time()
+        if current_time - self.last_button_press_time < self.button_cooldown:
+            print(f"🚫 Button cooldown active, ignoring touch (last press: {current_time - self.last_button_press_time:.3f}s ago)")
+            return  # Ignore rapid touches
+        self.last_button_press_time = current_time
+        
         # Reset inactivity timer on user interaction
         self.reset_inactivity_timer()
         
         if self.number_of_cups > 1:
             self.number_of_cups -= 1
             self.number_display.set_number(self.number_of_cups)
+            print(f"✅ Decreased cups to {self.number_of_cups}")
 
     def on_confirm_pay(self, instance):
         # Stop inactivity timer when confirming
@@ -408,6 +429,11 @@ class SelectionPage(Screen):
     
     def on_enter(self):
         """Reset when page becomes active"""
+        # Reset cup selection to 1
+        self.number_of_cups = 1
+        if hasattr(self, 'number_display'):
+            self.number_display.set_number(1)
+        
         # Start inactivity timer
         self.start_inactivity_timer()
         

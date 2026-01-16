@@ -103,9 +103,10 @@ class RFIDReader:
         """Process detected card input"""
         current_time = time.time()
         
-        # Prevent duplicate reads within 3 seconds
-        if current_time - self.last_card_time < 3:
-            print(f"🏷️ Duplicate card scan ignored: {card_number}")
+        # Minimal 0.5 second debounce to prevent hardware double-reads only
+        # No cooldown - user keeps card on reader during authentication
+        if current_time - self.last_card_time < 0.5:
+            print(f"🏷️ Duplicate card scan ignored (debounce): {card_number}")
             return
         
         self.last_card_time = current_time

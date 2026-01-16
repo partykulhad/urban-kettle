@@ -15,16 +15,16 @@ if [ ! -f "deployment.zip" ]; then
 fi
 
 echo "[1/4] Setting up directory on Pi..."
-ssh urbanketl@192.168.68.159 "mkdir -p /home/urbanketl/Downloads/BW-Modified"
+ssh urbanketl@192.168.4.1 "mkdir -p /home/urbanketl/Downloads/urban_kettle-dec"
 
 echo "[2/4] Transferring files..."
-scp deployment.zip urbanketl@192.168.68.159:/home/urbanketl/Downloads/BW-Modified/
+scp deployment.zip urbanketl@192.168.4.1:/home/urbanketl/Downloads/urban_kettle-dec/
 
 echo "[3/4] Extracting files on Pi..."
-ssh urbanketl@192.168.68.159 "cd /home/urbanketl/Downloads/BW-Modified && python3 -c \"import zipfile; zipfile.ZipFile('deployment.zip').extractall('.')\""
+ssh urbanketl@192.168.4.1 "cd /home/urbanketl/Downloads/urban_kettle-dec && python3 -c \"import zipfile; zipfile.ZipFile('deployment.zip').extractall('.')\""
 
 echo "[4/4] Running application with dependency check..."
-ssh -t urbanketl@192.168.68.159 "cd /home/urbanketl/Downloads/BW-Modified && python3 run_with_dependencies.py"
+ssh -t urbanketl@192.168.4.1 "cd /home/urbanketl/Downloads/urban_kettle-dec && python3 run_with_dependencies.py"
 
 echo "==================================================="
 echo "Deployment completed!"

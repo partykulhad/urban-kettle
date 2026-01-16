@@ -79,25 +79,36 @@ class HardwareErrorPage(Screen):
         
     def on_leave(self):
         """Called when screen is left"""
+        print("🛑 Hardware Error Page: on_leave() called - stopping monitoring")
         if self.monitor_event:
             self.monitor_event.cancel()
             self.monitor_event = None
+            print("✅ Hardware Error Page: Monitoring stopped")
             
     def check_status(self, dt):
         """Check if error persists"""
-        error_msg = hardware_monitor.get_latest_error()
+        result = hardware_monitor.get_latest_error()
         
-        if error_msg:
-            # Error still present, update message
-            self.message_label.text = error_msg
-        else:
-            # Error cleared! Navigate back to Home
-            print("Hardware error cleared - Navigating to Home")
+        # Result can be: error message string, None (no error), or tuple (status, temp)
+        if isinstance(result, tuple) and result[0] == 'HEATING':
+            # Temperature is low - navigate to heating page
+            temp = result[1]
+            print(f"Temperature low ({temp}°C) - Navigating to Heating page")
             from kivy.app import App
             app = App.get_running_app()
-            # Navigate to payment method page (Home)
             if app.screen_manager.current == self.name:
-                app.show_payment_method_page()
+                app.show_heating_page(temp)
+        elif result:
+            # Error still present, update message
+            self.message_label.text = result
+        else:
+            # Error cleared! Navigate back to Home with cups fetch
+            print("Hardware error cleared - Navigating to Home and fetching cups")
+            from kivy.app import App
+            app = App.get_running_app()
+            # Navigate to payment method page (Home) and fetch cups count
+            if app.screen_manager.current == self.name:
+                app.show_payment_method_page(fetch_cups=True)
                 
     def update_error(self, message):
         """Update the error message"""

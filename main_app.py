@@ -23,7 +23,8 @@ from ui_pages.selection_page import SelectionPage
 from ui_pages.payment_page import PaymentPage
 from ui_pages.loading_page import LoadingPage
 from ui_pages.transaction_processing_page import TransactionProcessingPage
-from ui_pages.dispensing_page import DispensingPage, PlaceCupPage  # Added PlaceCupPage import
+from ui_pages.dispensing_page import DispensingPage
+from ui_pages.place_cup_page import PlaceCupPage
 from ui_pages.thank_you_page import ThankYouPage
 from ui_pages.screensaver_page import ScreensaverPage
 from ui_pages.qr_expired_page import QRExpiredPage
@@ -31,6 +32,7 @@ from ui_pages.machine_empty_page import MachineEmptyPage
 from ui_pages.rfid_auth_page import RFIDAuthPage
 from ui_pages.hardware_debug_page import HardwareDebugPage
 from ui_pages.hardware_error_page import HardwareErrorPage
+from ui_pages.heating_page import HeatingPage
 
 
 class ChaiOrderingApp(App):
@@ -50,6 +52,24 @@ class ChaiOrderingApp(App):
         self.video_path = "input.mp4"  # Default video path
         self.current_qr_code_id = ""  # Store the current QR code ID
         self.status_check_event = None  # For tracking the status check timer
+        
+        # Cache for machine status (reduce API calls)
+        self._machine_status_cache = None
+        self._machine_status_cache_time = 0
+        self._machine_status_cache_ttl = 10  # Cache for 10 seconds
+        self._cups_count_cache = None
+        self._cups_count_cache_time = 0
+        
+        # *** LOCAL CUPS COUNTER - Fetch from API only on state transitions ***
+        self.local_cups_count = None  # Store cups count locally
+        self.cups_count_initialized = False  # Track if we've fetched initial count
+        
+        # *** Canister level alert tracking ***
+        self.canister_alert_sent = False  # Track if alert has been sent for cups = 5
+        
+        # *** Global machine status monitoring ***
+        self.global_status_monitor_event = None
+        self.global_status_check_interval = 5  # Check every 5 seconds
         
         # *** NEW: Cup management variables ***
         self.selected_cups = 1  # Default number of cups
@@ -73,6 +93,7 @@ class ChaiOrderingApp(App):
         self.rfid_auth_page = RFIDAuthPage(name='rfid_auth')  # RFID authentication page
         self.hardware_debug_page = HardwareDebugPage(name='hardware_debug')  # Hardware debug page
         self.hardware_error_page = HardwareErrorPage(name='hardware_error')
+        self.heating_page = HeatingPage(name='heating')  # Heating up page
         
         # Add screens to screen manager
         self.screen_manager.add_widget(self.payment_method_page)
@@ -86,9 +107,10 @@ class ChaiOrderingApp(App):
         self.screen_manager.add_widget(self.screensaver_page)
         self.screen_manager.add_widget(self.qr_expired_page)
         self.screen_manager.add_widget(self.machine_empty_page)
-        self.screen_manager.add_widget(self.rfid_auth_page)  # RFID authentication page
-        self.screen_manager.add_widget(self.hardware_debug_page)  # Hardware debug page
+        self.screen_manager.add_widget(self.rfid_auth_page)  # Add RFID auth page
+        self.screen_manager.add_widget(self.hardware_debug_page)  # Add hardware debug page
         self.screen_manager.add_widget(self.hardware_error_page)
+        self.screen_manager.add_widget(self.heating_page)  # Add heating page
         
         # Set initial screen to payment method selection
         self.screen_manager.current = 'payment_method'
@@ -109,9 +131,34 @@ class ChaiOrderingApp(App):
         Window.maximum_height = 661
         # Lock to exact 7-inch tablet size
         Window.resizable = False
-        
+        Window.fullscreen = 'auto'
         # Start hardware monitoring service
         hardware_monitor.start()
+        
+        # Initialize RFID Auth Handler early (at app startup)
+        print("🔐 Initializing RFID AES Auth Handler at startup...")
+        try:
+            from utils.rfid_aes_auth import RFIDAESAuth
+            self.rfid_auth_handler = RFIDAESAuth(
+                base_url="https://www.ukteawallet.com",
+                machine_id="UK_0007"
+            )
+            if self.rfid_auth_handler.reader_active:
+                print("✅ RFID Auth Handler initialized successfully at startup")
+            else:
+                print("⚠️ RFID reader not active at startup - will retry when entering payment page")
+        except Exception as e:
+            print(f"❌ Failed to initialize RFID Auth Handler at startup: {e}")
+            self.rfid_auth_handler = None
+        
+        # Warm up API connections (background)
+        self.api_client.warmup_apis()
+        
+        # Start global machine status monitoring
+        self.start_global_status_monitoring()
+        
+        # Check if tea is heating up (schedule check after 1.5 seconds to allow hardware monitor to start)
+        Clock.schedule_once(lambda dt: self.check_heating_on_startup(), 1.5)
         
         # Initialize and start screensaver video manager
         self.screensaver_video_manager = ScreensaverVideoManager(machine_id=self.MACHINE_ID)
@@ -135,9 +182,16 @@ class ChaiOrderingApp(App):
         if page_name != 'screensaver':
             self.reset_activity_timer()
     
-    def show_payment_method_page(self):
-        """Show the payment method selection page"""
+    def show_payment_method_page(self, fetch_cups=False):
+        """Show the payment method selection page
+        Args:
+            fetch_cups: If True, fetch cups count from API (for state transitions)
+        """
         self.show_page('payment_method')
+        
+        # Fetch cups count if requested (for transitions from heating/hardware_error/screensaver)
+        if fetch_cups:
+            self.fetch_and_store_cups_count()
     
     def show_selection_page(self):
         """Show the selection page"""
@@ -196,8 +250,10 @@ class ChaiOrderingApp(App):
     def show_place_cup_page(self):
         """Show the place cup page"""
         print(f"Showing place cup page for cup {self.current_cup_number} of {self.selected_cups}")
-        self.place_cup_page.update_cup_info(self.current_cup_number, self.selected_cups)
+        # Show the page first
         self.show_page('place_cup')
+        # Explicitly call on_enter to reset page state (Kivy won't call it if already on this screen)
+        self.place_cup_page.on_enter()
     
     def start_dispensing_current_cup(self):
         """Start dispensing for the current cup"""
@@ -227,33 +283,145 @@ class ChaiOrderingApp(App):
         if hasattr(self.payment_method_page, 'refresh_cups_count'):
             self.payment_method_page.refresh_cups_count()
     
-    def reduce_cups_after_payment(self):
-        """Reduce cups count after successful payment"""
-        # Call reduce cups API in a separate thread to avoid blocking UI
-        threading.Thread(target=self.call_reduce_cups_api, daemon=True).start()
+    # *** LOCAL CUPS COUNTER METHODS ***
+    def get_local_cups_count(self):
+        """Get the locally stored cups count"""
+        return self.local_cups_count if self.local_cups_count is not None else 0
     
-    def call_reduce_cups_api(self):
-        """Call the reduce cups API in background thread"""
-        try:
-            print(f"🔄 PAYMENT SUCCESSFUL - Reducing {self.selected_cups} cups from machine {self.MACHINE_ID}")
+    def set_local_cups_count(self, count):
+        """Set the local cups count and update UI"""
+        self.local_cups_count = count
+        self.cups_count_initialized = True
+        print(f"📦 Local cups count set to: {count}")
+        
+        # Check if cups are exactly 5 and alert hasn't been sent
+        print(f"🔍 DEBUG: count={count}, canister_alert_sent={self.canister_alert_sent}")
+        if count == 5 and not self.canister_alert_sent:
+            print(f"🔔 Cups are at 5! Sending canister alert...")
+            self.send_canister_alert()
+            self.canister_alert_sent = True
+        # Reset alert flag if cups go above 5 (refilled)
+        elif count > 5:
+            if self.canister_alert_sent:
+                print(f"🔄 Cups refilled to {count}, resetting alert flag")
+            self.canister_alert_sent = False
+        
+        # Update payment method page display
+        if hasattr(self.payment_method_page, 'update_cups_display'):
+            Clock.schedule_once(lambda dt: self.payment_method_page.update_cups_display(count))
+    
+    def decrement_local_cups(self, num_cups=1):
+        """Decrement local cups count (when dispensing)"""
+        if self.local_cups_count is not None:
+            self.local_cups_count = max(0, self.local_cups_count - num_cups)
+            print(f"📦 Local cups decremented by {num_cups}, new count: {self.local_cups_count}")
             
-            # Call API to reduce cups
-            result = self.api_client.reduce_cups(self.MACHINE_ID, self.selected_cups)
+            # Check if cups reached exactly 5 and alert hasn't been sent
+            print(f"🔍 DEBUG: after decrement count={self.local_cups_count}, canister_alert_sent={self.canister_alert_sent}")
+            if self.local_cups_count == 5 and not self.canister_alert_sent:
+                print(f"🔔 Cups reached 5 after dispensing! Sending canister alert...")
+                self.send_canister_alert()
+                self.canister_alert_sent = True
+            
+            # Reset alert flag if cups go above 5 (refilled)
+            elif self.local_cups_count > 5:
+                if self.canister_alert_sent:
+                    print(f"🔄 Cups refilled to {self.local_cups_count} after dispensing, resetting alert flag")
+                self.canister_alert_sent = False
+            
+            # Update payment method page display
+            if hasattr(self.payment_method_page, 'update_cups_display'):
+                Clock.schedule_once(lambda dt: self.payment_method_page.update_cups_display(self.local_cups_count))
+        else:
+            print("⚠️ Cannot decrement cups - local count not initialized")
+    
+    def fetch_and_store_cups_count(self):
+        """Fetch cups count from API and store locally (called on state transitions)"""
+        def fetch_in_background():
+            try:
+                print("🔄 Fetching cups count from API...")
+                cups_data = self.api_client.get_remaining_cups(self.MACHINE_ID)
+                
+                if cups_data and cups_data.get("success", False):
+                    cups_count = cups_data.get("cups", 0)
+                    Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
+                    print(f"✅ Fetched and stored cups count: {cups_count}")
+                    
+                    # Reset alert flag if cups are refilled (> 5)
+                    if cups_count > 5:
+                        self.canister_alert_sent = False
+                else:
+                    print("❌ Failed to fetch cups count from API")
+            except Exception as e:
+                print(f"❌ Error fetching cups count: {e}")
+        
+        # Run in background thread
+        threading.Thread(target=fetch_in_background, daemon=True).start()
+    
+    def send_canister_alert(self):
+        """Send canister level alert when cups reach 5"""
+        print(f"🔔 DEBUG: send_canister_alert() called for machine {self.MACHINE_ID}")
+        
+        def send_alert_in_background():
+            try:
+                print(f"🔔 DEBUG: Calling API check_canister_level()...")
+                result = self.api_client.check_canister_level(self.MACHINE_ID, canister_level=5)
+                if result:
+                    print(f"✅ DEBUG: Canister alert API call successful")
+                else:
+                    print(f"❌ DEBUG: Canister alert API call failed - no result")
+            except Exception as e:
+                print(f"❌ DEBUG: Error sending canister alert: {e}")
+        
+        # Run in background thread
+        print(f"🔔 DEBUG: Starting background thread for canister alert...")
+        threading.Thread(target=send_alert_in_background, daemon=True).start()
+        print(f"🔔 DEBUG: Background thread started")
+    
+    def reduce_cups_after_payment(self):
+        """DEPRECATED: Do not use. Cups should only be reduced when user clicks 'Confirm to Dispense' button.
+        Kept for backward compatibility but should not be called.
+        Use reduce_one_cup() from place_cup_page instead."""
+        print("⚠️ WARNING: reduce_cups_after_payment() called - this should not happen!")
+        print("⚠️ Cups should only reduce when 'Confirm to Dispense' is clicked")
+        # Don't reduce cups here
+        pass
+    
+    def reduce_one_cup(self):
+        """Reduce 1 cup count when user clicks 'Confirm to Dispense' button"""
+        # Call reduce cups API in a separate thread to avoid blocking UI
+        threading.Thread(target=lambda: self.call_reduce_cups_api(cups_to_reduce=1), daemon=True).start()
+    
+    def call_reduce_cups_api(self, cups_to_reduce=None):
+        """Call the reduce cups API in background thread
+        Args:
+            cups_to_reduce: Number of cups to reduce. If None, uses self.selected_cups
+        """
+        if cups_to_reduce is None:
+            cups_to_reduce = self.selected_cups
+            
+        try:
+            # Decrement local counter IMMEDIATELY for instant UI update
+            self.decrement_local_cups(cups_to_reduce)
+            
+            print(f"🔄 Sending cups reduction to backend: {cups_to_reduce} cup(s) from machine {self.MACHINE_ID}")
+            
+            # Call API to reduce cups (for backend sync)
+            result = self.api_client.reduce_cups(self.MACHINE_ID, cups_to_reduce)
             
             if result and result.get("success", False):
-                print(f"✅ Successfully reduced {self.selected_cups} cups")
+                print(f"✅ Backend synced - reduced {cups_to_reduce} cup(s)")
                 print(f"   Previous cups: {result.get('previousCups')}")
                 print(f"   New cups: {result.get('newCups')}")
                 print(f"   Message: {result.get('message')}")
-                
-                # Schedule cups count refresh on main thread
-                Clock.schedule_once(lambda dt: self.refresh_cups_count(), 0.5)
             else:
-                print("❌ Failed to reduce cups count")
+                print("❌ Failed to sync cups reduction to backend")
                 print(f"   API Response: {result}")
+                # Note: Local counter already decremented, so UI is updated
                 
         except Exception as e:
             print(f"❌ Error calling reduce cups API: {e}")
+            # Note: Local counter already decremented, so UI is updated
     
     def generate_qr_code(self, number_of_cups):
         """Generate QR code with parallel API calls for faster response"""
@@ -283,21 +451,35 @@ class ChaiOrderingApp(App):
                 return
             
             # Machine is online, process QR generation result
-            if qr_data and qr_data.get("success", False):
-                # Get QR image URL from the response
-                image_url = qr_data.get("imageUrl")
+            if qr_data:
+                # NEW: Use imageContent directly to generate QR code
+                image_content = qr_data.get("imageContent")
                 
-                if image_url:
-                    # Load QR image from URL
-                    qr_image = QRUtils.load_qr_from_url(image_url)
+                if image_content:
+                    print("⚡ Generating QR code from imageContent (fast method)...")
+                    # Generate QR code directly from UPI string
+                    qr_image = QRUtils.generate_qr_from_content(image_content)
                     
                     if qr_image:
-                        # Detect and crop QR code
-                        qr_image = QRUtils.detect_and_crop_qr(qr_image)
-                        
                         # Update payment page in main thread
                         Clock.schedule_once(lambda dt: self.update_payment_page(qr_image, qr_data))
                         return
+                else:
+                    # Fallback: Use old method with imageUrl (deprecated)
+                    print("⚠️ imageContent not found, falling back to imageUrl...")
+                    image_url = qr_data.get("imageUrl")
+                    
+                    if image_url:
+                        # Load QR image from URL
+                        qr_image = QRUtils.load_qr_from_url(image_url)
+                        
+                        if qr_image:
+                            # Detect and crop QR code
+                            qr_image = QRUtils.detect_and_crop_qr(qr_image)
+                            
+                            # Update payment page in main thread
+                            Clock.schedule_once(lambda dt: self.update_payment_page(qr_image, qr_data))
+                            return
             
             # If we get here, there was an error
             Clock.schedule_once(lambda dt: self.show_error_fallback())
@@ -372,8 +554,7 @@ class ChaiOrderingApp(App):
                 
             elif status_message == "paid":
                 self.payment_page.update_status("Payment received!")
-                # Reduce cups count when payment is successful
-                self.reduce_cups_after_payment()
+                # Don't reduce cups here - will reduce when user clicks dispense
                 # Show transaction processing page immediately, then move to dispensing
                 Clock.schedule_once(lambda dt: self.show_transaction_processing_page(), 0.5)
                 Clock.schedule_once(lambda dt: self.show_dispensing_page(), 4)
@@ -496,61 +677,79 @@ class ChaiOrderingApp(App):
         self.show_page('screensaver')
             
     def deactivate_screensaver(self):
-        """Deactivate the screensaver - check machine status and navigate appropriately"""
+        """Deactivate the screensaver - navigate immediately using local cups count"""
         self.screensaver_active = False
-        print("Deactivating screensaver - checking machine status...")
+        print("⚡ Deactivating screensaver - navigating immediately...")
         
-        # Check machine status and cups availability in background thread
-        threading.Thread(target=self.check_machine_and_navigate, daemon=True).start()
+        # INSTANT NAVIGATION - show home page immediately with local cups count
+        self.show_payment_method_page()
+        
+        # No API call needed - local cups count is already available
+        print(f"📦 Using local cups count: {self.local_cups_count}")
     
-    def check_machine_and_navigate(self):
-        """Check machine status and cups, then navigate to appropriate page"""
+    def check_machine_status_background(self):
+        """Check machine status in background with parallel API calls and fetch cups count"""
         try:
-            # Check machine status
-            status_data = self.api_client.check_machine_status(self.MACHINE_ID)
+            # Wait a moment to let home page render first
+            time.sleep(0.3)
             
-            if status_data and status_data.get("success", False):
-                # Get status from nested data object
-                data = status_data.get("data", {})
+            print("🔄 Fetching machine status and cups count (transition to home)...")
+            
+            status_result = [None]
+            cups_result = [None]
+            
+            def fetch_status():
+                """Parallel thread 1: Get machine status"""
+                try:
+                    status_result[0] = self.api_client.check_machine_status(self.MACHINE_ID)
+                except Exception as e:
+                    print(f"Status check error: {e}")
+            
+            def fetch_cups():
+                """Parallel thread 2: Get cups count"""
+                try:
+                    cups_result[0] = self.api_client.get_remaining_cups(self.MACHINE_ID)
+                except Exception as e:
+                    print(f"Cups check error: {e}")
+            
+            # Run both API calls in parallel
+            t1 = threading.Thread(target=fetch_status, daemon=True)
+            t2 = threading.Thread(target=fetch_cups, daemon=True)
+            
+            t1.start()
+            t2.start()
+            
+            # Wait for both (max 3 seconds)
+            t1.join(timeout=3)
+            t2.join(timeout=3)
+            
+            # Process results
+            is_online = True
+            cups_count = 0
+            
+            if status_result[0] and status_result[0].get("success", False):
+                data = status_result[0].get("data", {})
                 machine_status = data.get("status", "offline")
                 is_online = machine_status.lower() == "online"
-                
-                print(f"Machine status: {machine_status}, is_online: {is_online}")
-                
-                if not is_online:
-                    # Machine is offline, go to machine empty page
-                    print("Machine is offline - navigating to machine empty page")
-                    Clock.schedule_once(lambda dt: self.show_page('machine_empty'))
-                    return
-                
-                # Machine is online, check cups availability
-                cups_data = self.api_client.get_remaining_cups(self.MACHINE_ID)
-                
-                if cups_data and cups_data.get("success", False):
-                    cups_count = cups_data.get("cups", 0)
-                    print(f"Cups available: {cups_count}")
-                    
-                    if cups_count > 0:
-                        # Machine is online and has cups, go to payment method page
-                        print("Machine is online with cups - navigating to payment method page")
-                        Clock.schedule_once(lambda dt: self.show_payment_method_page())
-                    else:
-                        # Machine is online but no cups, go to machine empty page
-                        print("Machine is online but no cups - navigating to machine empty page")
-                        Clock.schedule_once(lambda dt: self.show_page('machine_empty'))
-                else:
-                    # Failed to get cups data, fallback to payment method page
-                    print("Failed to get cups data - navigating to payment method page")
-                    Clock.schedule_once(lambda dt: self.show_payment_method_page())
+            
+            if cups_result[0] and cups_result[0].get("success", False):
+                cups_count = cups_result[0].get("cups", 0)
+                # Store locally for future use
+                Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
+            
+            # Navigate based on results
+            if not is_online:
+                print("⚠️ Machine offline detected - switching to machine empty page")
+                Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
+            elif cups_count <= 0:
+                print("⚠️ No cups available - switching to machine empty page")
+                Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
             else:
-                # Failed to get machine status, fallback to payment method page
-                print("Failed to get machine status - navigating to payment method page")
-                Clock.schedule_once(lambda dt: self.show_payment_method_page())
-                
+                print(f"✅ Machine online with {cups_count} cups - staying on home page")
+        
         except Exception as e:
-            print(f"Error checking machine status: {e}")
-            # On error, fallback to payment method page
-            Clock.schedule_once(lambda dt: self.show_payment_method_page())
+            print(f"Background status check error: {e}")
+            # Stay on home page if check fails
     
     def on_timer_expired(self):
         """Handle payment timer expiration"""
@@ -565,9 +764,15 @@ class ChaiOrderingApp(App):
         
     def check_hardware_errors(self, dt):
         """Check for hardware errors and navigate to error page if needed"""
-        error_msg = hardware_monitor.get_latest_error()
-        
         current_screen = self.screen_manager.current
+        
+        # Don't check during critical operations to avoid interrupting them
+        critical_screens = ['dispensing', 'place_cup', 'payment', 'transaction_processing', 'thank_you', 'heating']
+        if current_screen in critical_screens:
+            # Skip error checking during critical operations
+            return
+        
+        error_msg = hardware_monitor.get_latest_error()
         
         # Only show error page if we're not already on it and there's an error
         if error_msg and current_screen != 'hardware_error':
@@ -576,11 +781,169 @@ class ChaiOrderingApp(App):
             if hasattr(self.hardware_error_page, 'set_error_message'):
                 self.hardware_error_page.set_error_message(error_msg)
     
+    def check_heating_on_startup(self):
+        """Check if tea is heating up on app startup"""
+        def check_temp_background():
+            try:
+                # Check PT100 temperature
+                temp = hardware_monitor.get_pt100_temperature()
+                
+                if temp is None:
+                    # Can't get temperature, fetch cups and show home
+                    print("⚠️ Can't get temperature, assuming ready")
+                    Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 0)
+                elif temp < 83:
+                    # Tea is heating up
+                    print(f"🔥 Tea is heating: {temp:.1f}°C (target: 83°C)")
+                    Clock.schedule_once(lambda dt: self.show_heating_page(temp), 0)
+                else:
+                    # Tea is ready, fetch cups and show home
+                    print(f"✅ Tea is ready: {temp:.1f}°C")
+                    Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 0)
+            
+            except Exception as e:
+                print(f"Heating check error: {e}")
+                Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 0)
+        
+        # Run in background thread
+        threading.Thread(target=check_temp_background, daemon=True).start()
+    
+    def show_heating_page(self, current_temp):
+        """Show heating page and start temperature monitoring"""
+        # Enable fast polling mode in hardware monitor
+        hardware_monitor.enable_heating_mode()
+        
+        # Update temperature
+        self.heating_page.update_temperature(current_temp)
+        
+        # Navigate to heating page
+        self.show_page('heating')
+        
+        # Start fast polling (every 1 second)
+        self.start_heating_monitor()
+    
+    def start_heating_monitor(self):
+        """Monitor temperature every 1 second until ready"""
+        print("🔥 Starting heating monitor (checking every 1 second)")
+        
+        def check_temp():
+            try:
+                temp = hardware_monitor.get_pt100_temperature()
+                
+                if temp is None:
+                    # Can't get temperature, assume ready, fetch cups and navigate
+                    print("⚠️ Can't get temperature during heating, assuming ready")
+                    self.stop_heating_monitor()
+                    self.show_payment_method_page(fetch_cups=True)
+                    return False
+                
+                # Update display
+                self.heating_page.update_temperature(temp)
+                
+                if temp >= 83:
+                    # Tea is ready! Fetch cups and navigate to home
+                    print(f"✅ Tea ready at {temp:.1f}°C - navigating to home")
+                    self.stop_heating_monitor()
+                    self.show_payment_method_page(fetch_cups=True)
+                    return False
+                else:
+                    # Still heating
+                    print(f"🔥 Heating: {temp:.1f}°C / 83°C")
+                    return True  # Continue checking
+            
+            except Exception as e:
+                print(f"Heating monitor error: {e}")
+                self.stop_heating_monitor()
+                self.show_payment_method_page(fetch_cups=True)
+                return False
+        
+        # Schedule check every 1 second
+        self.heating_check_event = Clock.schedule_interval(lambda dt: check_temp(), 1)
+    
+    def stop_heating_monitor(self):
+        """Stop heating temperature monitoring"""
+        # Disable fast polling mode in hardware monitor
+        hardware_monitor.disable_heating_mode()
+        
+        if hasattr(self, 'heating_check_event') and self.heating_check_event:
+            self.heating_check_event.cancel()
+            self.heating_check_event = None
+            print("⏹️ Stopped heating monitor")
+    
     def on_stop(self):
         """Called when app is closing"""
+        # Stop heating monitor if running
+        self.stop_heating_monitor()
+        
+        # Stop global status monitoring
+        self.stop_global_status_monitoring()
+        
         # Stop hardware monitoring
         hardware_monitor.stop()
         return super().on_stop()
+    
+    def start_global_status_monitoring(self):
+        """Start global machine status monitoring that runs on all pages"""
+        # Stop any existing monitoring first
+        self.stop_global_status_monitoring()
+        
+        # Schedule periodic check every 5 seconds
+        self.global_status_monitor_event = Clock.schedule_interval(
+            self.check_global_machine_status, 
+            self.global_status_check_interval
+        )
+        print(f"🌐 Started GLOBAL machine status monitoring (every {self.global_status_check_interval} seconds)")
+    
+    def stop_global_status_monitoring(self):
+        """Stop global machine status monitoring"""
+        if self.global_status_monitor_event:
+            self.global_status_monitor_event.cancel()
+            self.global_status_monitor_event = None
+            print("🛑 Stopped GLOBAL machine status monitoring")
+    
+    def check_global_machine_status(self, dt):
+        """Check machine status in background - runs on all pages"""
+        # Don't check if we're already on machine_empty or screensaver page
+        current_page = self.screen_manager.current
+        if current_page in ['machine_empty', 'screensaver']:
+            return
+        
+        # Run check in background thread
+        threading.Thread(target=self._do_global_status_check, daemon=True).start()
+    
+    def _do_global_status_check(self):
+        """Perform global machine status check"""
+        try:
+            # Check machine status
+            status_data = self.api_client.check_machine_status(self.MACHINE_ID)
+            
+            if status_data and status_data.get("success", False):
+                data = status_data.get("data", {})
+                machine_status = data.get("status", "offline")
+                is_online = machine_status.lower() == "online"
+                
+                if not is_online:
+                    # Machine went offline - navigate to machine empty page
+                    print("⚠️ GLOBAL CHECK: Machine went OFFLINE - navigating to machine empty page")
+                    Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
+                    return
+            
+            # Also check cups count
+            cups_data = self.api_client.get_remaining_cups(self.MACHINE_ID)
+            if cups_data and cups_data.get("success", False):
+                cups_count = cups_data.get("cups", 0)
+                
+                # Update local count
+                Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
+                
+                if cups_count <= 0:
+                    # Cups ran out - navigate to machine empty page
+                    print("⚠️ GLOBAL CHECK: Cups ran out (0 remaining) - navigating to machine empty page")
+                    Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
+                    return
+                    
+        except Exception as e:
+            print(f"Global status check error: {e}")
 
 
 if __name__ == "__main__":

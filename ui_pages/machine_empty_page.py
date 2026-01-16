@@ -174,7 +174,7 @@ class MachineEmptyPage(Screen):
         threading.Thread(target=self.fetch_cups_count, daemon=True).start()
     
     def fetch_cups_count(self):
-        """Fetch cups count and machine status from API in background thread"""
+        """Fetch cups count and machine status from API in background thread - called once on page enter"""
         from kivy.app import App
         app = App.get_running_app()
         
@@ -197,12 +197,15 @@ class MachineEmptyPage(Screen):
                         print("Machine is still offline")
                         return
                 
-                # Check cups count
+                # Check cups count and store locally
                 cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)
                 
                 # Check if cups are now available
                 if cups_data and cups_data.get("success", False):
                     cups_count = cups_data.get("cups", 0)
+                    
+                    # Store locally
+                    Clock.schedule_once(lambda dt: app.set_local_cups_count(cups_count))
                     
                     # If machine is online and cups are available, return to payment method page
                     if cups_count > 0:
@@ -212,5 +215,8 @@ class MachineEmptyPage(Screen):
             print(f"Error checking machine availability: {e}")
     
     def return_to_payment_method(self):
-        """Return to payment method page"""
-        self.manager.current = 'payment_method'
+        """Return to payment method page and fetch cups count"""
+        from kivy.app import App
+        app = App.get_running_app()
+        # Navigate to home and fetch cups count
+        app.show_payment_method_page(fetch_cups=True)

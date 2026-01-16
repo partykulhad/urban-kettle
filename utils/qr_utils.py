@@ -1,11 +1,46 @@
 import cv2
 import numpy as np
 import requests
-from PIL import Image, ImageTk, ImageDraw
+from PIL import Image, ImageDraw
 import io
+import qrcode
 
 class QRUtils:
     """Utility class for QR code operations"""
+    
+    @staticmethod
+    def generate_qr_from_content(content):
+        """Generate QR code directly from content string (FAST METHOD)
+        Args:
+            content: UPI string or any QR code content
+        Returns:
+            PIL Image object
+        """
+        try:
+            # Create QR code instance
+            qr = qrcode.QRCode(
+                version=1,  # Auto-adjust size
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            
+            # Add data and generate
+            qr.add_data(content)
+            qr.make(fit=True)
+            
+            # Create image
+            qr_image = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convert to PIL RGB format
+            qr_image = qr_image.convert('RGB')
+            
+            print(f"✅ QR code generated from content ({len(content)} chars)")
+            return qr_image
+            
+        except Exception as e:
+            print(f"Error generating QR from content: {e}")
+            return None
     
     @staticmethod
     def load_qr_from_url(image_url):

@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  polling-server:
+    build: .
+    ports:
+      - "5000:5000"
+    container_name: urbanketl-polling-server
+    restart: unless-stopped
+    environment:
+      - FLASK_ENV=development
+    volumes:
+      - .:/app
+    command: python polling_server2.py

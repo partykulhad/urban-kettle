@@ -13,6 +13,48 @@ class ApiClient:
         self.MACHINE_STATUS_CHECK_URL = "https://kulhad.vercel.app/api/MachinesStatus"
         self.REDUCE_CUPS_API_URL = "https://kulhad.vercel.app/api/reduce-cups"
         self.RFID_VALIDATE_API_URL = "https://tea-wallet-prasadthirtha.replit.app/api/rfid/validate"
+        self.CANISTER_CHECK_API_URL = "https://kulhad.vercel.app/api/canister-check"
+        
+        # Use persistent session for connection pooling
+        self.session = requests.Session()
+        # Configure connection pooling
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=20,
+            max_retries=3
+        )
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
+    
+    def warmup_apis(self):
+        """Warm up API connections to reduce cold start latency"""
+        import threading
+        
+        def warmup_background():
+            try:
+                print("🔥 Warming up API connections...")
+                
+                # Warm up kulhad.vercel.app (where QR APIs are hosted)
+                warmup_urls = [
+                    "https://kulhad.vercel.app/api/MachinesStatus?machineId=KH-01",
+                    "https://www.ukteawallet.com",
+                ]
+                
+                for url in warmup_urls:
+                    try:
+                        # HEAD request is faster than GET
+                        self.session.head(url, timeout=3)
+                        print(f"✓ Warmed up: {url.split('/')[2]}")
+                    except Exception as e:
+                        print(f"⚠ Warmup failed for {url}: {e}")
+                
+                print("✅ API warmup complete!")
+                
+            except Exception as e:
+                print(f"Warmup error: {e}")
+        
+        # Run warmup in background thread
+        threading.Thread(target=warmup_background, daemon=True).start()
     
     def generate_payment_qr(self, machine_id, number_of_cups):
         """Generate a payment QR code"""
@@ -22,7 +64,7 @@ class ApiClient:
                 "numberOfCups": number_of_cups
             }
             
-            response = requests.post(self.PAYMENT_API_URL, json=payload)
+            response = self.session.post(self.PAYMENT_API_URL, json=payload)
             return response.json() if response.status_code == 200 else None
         except Exception as e:
             print(f"Error generating payment QR: {e}")
@@ -36,7 +78,7 @@ class ApiClient:
             
             print(f"Sending status check payload: {payload}")
             
-            response = requests.post(
+            response = self.session.post(
                 self.STATUS_API_URL,
                 data=json.dumps(payload),
                 headers=headers
@@ -59,7 +101,7 @@ class ApiClient:
             
             print(f"Cancelling QR code with ID: {qr_code_id}")
             
-            response = requests.post(
+            response = self.session.post(
                 self.CANCEL_API_URL,
                 data=json.dumps(payload),
                 headers=headers
@@ -86,7 +128,7 @@ class ApiClient:
             
             print(f"Checking machine {machine_id} status...")
             
-            response = requests.get(url)
+            response = self.session.get(url)
             
             if response.status_code == 200:
                 result = response.json()
@@ -108,7 +150,7 @@ class ApiClient:
             
             print(f"Getting remaining cups for machine {machine_id}...")
             
-            response = requests.post(
+            response = self.session.post(
                 self.REDUCE_CUPS_API_URL,
                 data=json.dumps(payload),
                 headers=headers
@@ -137,7 +179,7 @@ class ApiClient:
             
             print(f"Reducing {number_of_cups} cups for machine {machine_id}...")
             
-            response = requests.post(
+            response = self.session.post(
                 self.REDUCE_CUPS_API_URL,
                 data=json.dumps(payload),
                 headers=headers
@@ -179,3 +221,41 @@ class ApiClient:
         except Exception as e:
             print(f"Error in AES authentication: {e}")
             return {"success": False, "error": str(e)}
+    
+    def check_canister_level(self, machine_id, canister_level=5):
+        """
+        Send canister level alert when cups reach critical level (5 cups)
+        Args:
+            machine_id: Machine ID (e.g., 'KH-01')
+            canister_level: Always send 5 as per requirement
+        """
+        try:
+            payload = {
+                "machineId": machine_id,
+                "canisterLevel": canister_level
+            }
+            headers = {"Content-Type": "application/json"}
+            
+            print(f"🔔 Sending canister level alert for machine {machine_id} (level: {canister_level})")
+            
+            response = requests.post(
+                self.CANISTER_CHECK_API_URL,
+                data=json.dumps(payload),
+                headers=headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"✅ Canister alert sent successfully")
+                print(f"   Request ID: {result.get('data', {}).get('requestId')}")
+                print(f"   Message: {result.get('message')}")
+                return result
+            else:
+                print(f"❌ Failed to send canister alert: {response.status_code}")
+                print(f"   Error: {response.text}")
+                return None
+        except Exception as e:
+            print(f"❌ Error sending canister alert: {e}")
+            return None
+

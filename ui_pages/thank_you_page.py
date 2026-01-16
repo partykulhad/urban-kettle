@@ -46,19 +46,19 @@ class ThankYouPage(Screen):
             self.rect = RoundedRectangle(size=Window.size, pos=(0, 0))
         main_layout.bind(size=self._update_rect)
         
-        # Top section with logo on left - matching other pages
-        top_section = BoxLayout(orientation='vertical', size_hint_y=0.16, padding=[10, 5])
+        # Top section with logo on left - reduced size
+        top_section = BoxLayout(orientation='vertical', size_hint_y=0.13, padding=[10, 5])
         
-        # Logo on the left
-        logo_float = FloatLayout(size_hint_y=0.7)
+        # Logo on the left - smaller
+        logo_float = FloatLayout(size_hint_y=0.6)
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
         
         if os.path.exists(logo_path):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(230, 200),
-                pos_hint={'x': -0.05, 'top': 1.2},  # More left
+                size=(200, 170),
+                pos_hint={'x': -0.05, 'top': 1.15},
                 allow_stretch=True,
                 keep_ratio=True
             )
@@ -66,7 +66,7 @@ class ThankYouPage(Screen):
         else:
             fallback_logo = Label(
                 text='Urban Ketl',
-                font_size='32sp',
+                font_size='28sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
                 halign='left'
@@ -75,50 +75,45 @@ class ThankYouPage(Screen):
         
         top_section.add_widget(logo_float)
         
-        # "ENJOY YOUR CHAI!" text - bigger font
+        # "ENJOY YOUR CHAI!" text - reduced size and moved up
         enjoy_label = Label(
             text='ENJOY YOUR CHAI!',
-            font_size='40sp',  # Increased from 36sp
+            font_size='32sp',
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.3
+            size_hint_y=0.4
         )
         top_section.add_widget(enjoy_label)
         
         main_layout.add_widget(top_section)
         
-        # Thank you image (tea cup with steam)
-        image_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.35)
-        thankyou_image_path = os.path.join('assets', 'thankyou.png')
+        # Spacing after ENJOY text
+        main_layout.add_widget(Widget(size_hint_y=0.02))
         
-        if os.path.exists(thankyou_image_path):
-            thankyou_image = Image(
-                source=thankyou_image_path,
-                size_hint=(None, None),
-                size=(250, 250),
-                allow_stretch=True,
-                keep_ratio=True
-            )
-            image_section.add_widget(thankyou_image)
-        else:
-            # Fallback if image not found
-            fallback_text = Label(
-                text='☕',
-                font_size='120sp',
-                color=(0.714, 0.478, 0.176, 1),
-                halign='center'
-            )
-            image_section.add_widget(fallback_text)
+        # Thank you image section
+        image_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.40)
         
+        thankyou_image = Image(
+            source=os.path.join('assets', 'thankyou.png'),
+            size_hint=(None, None),
+            size=(260, 260),
+            allow_stretch=True,
+            keep_ratio=True
+        )
+        
+        image_section.add_widget(thankyou_image)
         main_layout.add_widget(image_section)
         
-        # "Dispensing complete. Have a great day!" text
-        message_section = BoxLayout(orientation='vertical', size_hint_y=0.15, spacing=5)
+        # Spacing after video
+        main_layout.add_widget(Widget(size_hint_y=0.01))
+        
+        # "Dispensing complete. Have a great day!" text - reduced size
+        message_section = BoxLayout(orientation='vertical', size_hint_y=0.12, spacing=3)
         
         complete_label = Label(
             text='Dispensing complete.',
-            font_size='28sp',
+            font_size='24sp',
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -126,7 +121,7 @@ class ThankYouPage(Screen):
         
         great_day_label = Label(
             text='Have a great day!',
-            font_size='28sp',
+            font_size='24sp',
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -135,16 +130,16 @@ class ThankYouPage(Screen):
         main_layout.add_widget(message_section)
         
         # Spacing before button
-        main_layout.add_widget(Widget(size_hint_y=0.03))
+        main_layout.add_widget(Widget(size_hint_y=0.02))
         
-        # Simple button section
-        button_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.10)
+        # Simple button section - reduced size
+        button_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.09)
         
         self.new_order_btn = SimpleButton(
             text='Place New Order',
             size_hint=(None, None),
-            size=(280, 60),
-            font_size='22sp',
+            size=(260, 55),
+            font_size='20sp',
             bold=True,
             color=(1, 1, 1, 1),
             bg_color=(0.944, 0.679, 0.166, 1) 
@@ -155,7 +150,7 @@ class ThankYouPage(Screen):
         main_layout.add_widget(button_section)
         
         # Bottom spacing
-        main_layout.add_widget(Widget(size_hint_y=0.05))
+        main_layout.add_widget(Widget(size_hint_y=0.03))
         
         self.add_widget(main_layout)
         
@@ -168,6 +163,7 @@ class ThankYouPage(Screen):
     
     def on_new_order(self, instance=None):
         """Handle new order button"""
+        print("🏠 Thank you page: Returning to payment method page")
         if self.auto_return_event:
             self.auto_return_event.cancel()
             self.auto_return_event = None
@@ -176,12 +172,17 @@ class ThankYouPage(Screen):
         app.show_payment_method_page()
     
     def on_enter(self):
-        """Start auto-return timer when page enters"""
-        # Auto-return to payment method after 10 seconds
-        self.auto_return_event = Clock.schedule_once(lambda dt: self.on_new_order(), 10)
+        """Start auto-return timer and video when page enters"""
+        # No video to start - using static image
+        
+        # Auto-return to payment method after 5 seconds
+        print("⏱️ Thank you page: Starting 5-second auto-return timer")
+        self.auto_return_event = Clock.schedule_once(lambda dt: self.on_new_order(), 5)
     
     def on_leave(self):
         """Clean up when leaving page"""
+        # No video to stop - using static image
+        
         if self.auto_return_event:
             self.auto_return_event.cancel()
             self.auto_return_event = None

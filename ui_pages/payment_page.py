@@ -55,10 +55,10 @@ class PaymentPage(Screen):
         main_layout.bind(size=self._update_rect)
         
         # Top section with logo on left and SCAN TO PAY
-        top_section = BoxLayout(orientation='vertical', size_hint_y=0.18, padding=[10, 5])
+        top_section = BoxLayout(orientation='vertical', size_hint_y=0.15, padding=[10, 5])
         
         # Logo on the left using FloatLayout
-        logo_float = BoxLayout(size_hint_y=0.6)
+        logo_float = BoxLayout(size_hint_y=0.55)
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
         
         if os.path.exists(logo_path):
@@ -67,8 +67,8 @@ class PaymentPage(Screen):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(230, 200),
-                pos_hint={'x': 0.0, 'top': 1.3},  # Left side, top position
+                size=(200, 170),
+                pos_hint={'x': 0.0, 'top': 1.2},
                 allow_stretch=True,
                 keep_ratio=True
             )
@@ -77,7 +77,7 @@ class PaymentPage(Screen):
         else:
             fallback_logo = Label(
                 text='Urban Ketl',
-                font_size='32sp',
+                font_size='28sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
                 halign='left'
@@ -86,29 +86,29 @@ class PaymentPage(Screen):
         
         top_section.add_widget(logo_float)
         
-        # "SCAN TO PAY" text - moved higher with bigger font
+        # "SCAN TO PAY" text - reduced size and moved up
         scan_label = Label(
             text='SCAN TO PAY',
-            font_size='40sp',  # Increased from 32sp
+            font_size='32sp',
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.4
+            size_hint_y=0.45
         )
         top_section.add_widget(scan_label)
         
         main_layout.add_widget(top_section)
         
-        # Reduced spacing
-        main_layout.add_widget(Widget(size_hint_y=0.01))
+        # Spacing after SCAN TO PAY
+        main_layout.add_widget(Widget(size_hint_y=0.02))
         
-        # QR code section
-        qr_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.38)
+        # QR code section - increased space
+        qr_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.40)
         
-        # QR code container - optimized for 7-inch tablet
+        # QR code container - reduced size
         self.qr_container = BoxLayout(
             size_hint=(None, None),
-            size=(280, 280),
+            size=(250, 250),
             padding=10
         )
         
@@ -117,7 +117,7 @@ class PaymentPage(Screen):
             Color(1, 1, 1, 1)
             self.qr_bg = RoundedRectangle(
                 pos=self.qr_container.pos, 
-                size=(280, 280), 
+                size=(250, 250), 
                 radius=[15]
             )
         
@@ -133,14 +133,14 @@ class PaymentPage(Screen):
         qr_section.add_widget(self.qr_container)
         main_layout.add_widget(qr_section)
         
-        # Spacing
-        main_layout.add_widget(Widget(size_hint_y=0.01))
+        # Spacing after QR
+        main_layout.add_widget(Widget(size_hint_y=0.02))
         
-        # Total amount display below QR code - increased font
-        amount_section = AnchorLayout(anchor_x='right', anchor_y='center', size_hint_y=0.08)
+        # Total amount display below QR code - reduced font
+        amount_section = AnchorLayout(anchor_x='right', anchor_y='center', size_hint_y=0.07)
         self.amount_label = Label(
             text='Total: ₹0',
-            font_size='30sp',  # Increased from 24sp
+            font_size='26sp',
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
             halign='right'
@@ -151,12 +151,12 @@ class PaymentPage(Screen):
         # Spacing
         main_layout.add_widget(Widget(size_hint_y=0.01))
         
-        # Instruction text - increased fonts
-        instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.09, spacing=3)
+        # Instruction text - reduced fonts
+        instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.08, spacing=3)
         
         scan_text_label = Label(
             text='Scan this QR with your UPI',
-            font_size='24sp',  # Increased from 20sp
+            font_size='20sp',
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
@@ -164,7 +164,7 @@ class PaymentPage(Screen):
         
         payment_label = Label(
             text='app to make payment.',
-            font_size='24sp',  # Increased from 20sp
+            font_size='20sp',
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )

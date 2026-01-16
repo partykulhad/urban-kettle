@@ -5,6 +5,11 @@ Handles secure AES authentication with RFID cards using live connection
 
 from smartcard.System import readers
 from smartcard.util import toHexString, toBytes
+from smartcard.scard import (
+    SCardEstablishContext, SCardConnect, SCardDisconnect, SCardControl,
+    SCardReleaseContext, SCARD_SCOPE_USER, SCARD_SHARE_DIRECT, 
+    SCARD_LEAVE_CARD, SCARD_S_SUCCESS
+)
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -54,6 +59,8 @@ class RFIDAESAuth:
                 self.reader = r[0]
                 self.reader_active = True
                 print("✓ RFID Reader found and ready")
+                # Turn on green LED to indicate reader is ready
+                self.set_led_green()
             else:
                 print("✗ No RFID reader found")
                 self.reader_active = False
@@ -61,6 +68,98 @@ class RFIDAESAuth:
             print(f"✗ Reader initialization failed: {e}")
             self.reader_active = False
     
+    def set_led_green(self):
+        """Set the ACR122U LED to green (ready state)"""
+        try:
+            if not self.reader:
+                return False
+            
+            reader_name = str(self.reader)
+            
+            # Establish context for direct connection
+            hresult, hcontext = SCardEstablishContext(SCARD_SCOPE_USER)
+            if hresult != SCARD_S_SUCCESS:
+                print(f"✗ Failed to establish context for LED control")
+                return False
+            
+            # Connect in DIRECT mode (no card needed for LED control)
+            hresult, hcard, dwActiveProtocol = SCardConnect(
+                hcontext, 
+                reader_name, 
+                SCARD_SHARE_DIRECT,
+                0
+            )
+            
+            if hresult != SCARD_S_SUCCESS:
+                SCardReleaseContext(hcontext)
+                print(f"✗ Failed to connect for LED control")
+                return False
+            
+            # ACR122U LED control command
+            # FF 00 40 [LED State] 04 [Duration] [Color T1] [Color T2] [Repeat]
+            # LED State 0x0E = Green ON, Red OFF (00001110)
+            # Bit 1: Final Green LED State = ON
+            # Bit 2: Red LED State Mask = update
+            # Bit 3: Green LED State Mask = update
+            led_cmd = bytes([0xFF, 0x00, 0x40, 0x0E, 0x04, 0x00, 0x00, 0x00, 0x00])
+            
+            # IOCTL for ACR122U on Linux
+            IOCTL_CCID_ESCAPE = 0x003136B0
+            
+            hresult, response = SCardControl(hcard, IOCTL_CCID_ESCAPE, list(led_cmd))
+            
+            SCardDisconnect(hcard, SCARD_LEAVE_CARD)
+            SCardReleaseContext(hcontext)
+            
+            if hresult == SCARD_S_SUCCESS:
+                print("✓ RFID Reader LED set to GREEN (ready)")
+                return True
+            else:
+                print(f"✗ Failed to set LED: {hresult}")
+                return False
+                
+        except Exception as e:
+            print(f"✗ LED control error: {e}")
+            return False
+    
+    def set_led_red(self):
+        """Set the ACR122U LED to red (busy/error state)"""
+        try:
+            if not self.reader:
+                return False
+            
+            reader_name = str(self.reader)
+            
+            hresult, hcontext = SCardEstablishContext(SCARD_SCOPE_USER)
+            if hresult != SCARD_S_SUCCESS:
+                return False
+            
+            hresult, hcard, dwActiveProtocol = SCardConnect(
+                hcontext, 
+                reader_name, 
+                SCARD_SHARE_DIRECT,
+                0
+            )
+            
+            if hresult != SCARD_S_SUCCESS:
+                SCardReleaseContext(hcontext)
+                return False
+            
+            # LED State 0x0D = Red ON, Green OFF (00001101)
+            led_cmd = bytes([0xFF, 0x00, 0x40, 0x0D, 0x04, 0x00, 0x00, 0x00, 0x00])
+            
+            IOCTL_CCID_ESCAPE = 0x003136B0
+            hresult, response = SCardControl(hcard, IOCTL_CCID_ESCAPE, list(led_cmd))
+            
+            SCardDisconnect(hcard, SCARD_LEAVE_CARD)
+            SCardReleaseContext(hcontext)
+            
+            return hresult == SCARD_S_SUCCESS
+                
+        except Exception as e:
+            print(f"✗ LED control error: {e}")
+            return False
+
     def _prewarm_connection(self):
         """Pre-warm HTTP connection to reduce first request latency"""
         try:

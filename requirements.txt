@@ -1,16 +1,2 @@
-# Urban Kettle - Chai Ordering System Requirements
-# Compatible with Raspberry Pi 5 (ARM64/aarch64)
-
-# Core GUI Framework
-kivy==2.3.0
-kivymd==1.2.0  # Optional, if using Material Design
-
-# Image Processing
-opencv-python==4.10.0.84  # For QR code detection
-Pillow==10.4.0  # Image manipulation
-numpy==1.26.4  # Array operations
-
-# Network & API
-requests==2.32.3  # HTTP requests for API calls
-
-# Python version requirement: Python 3.9+
+Flask==3.1.0
+qrcode[pil]
