@@ -7,6 +7,7 @@ import threading
 import time
 import requests
 from datetime import datetime
+import subprocess
 import sys
 import os
 import socket
@@ -15,7 +16,7 @@ import socket
 class HardwareMonitor:
     """Background service for hardware monitoring"""
     
-    def __init__(self, machine_id="KH-01", api_base_url="http://192.168.100.236:5000"):
+    def __init__(self, machine_id="KH-01", api_base_url="http://192.168.68.136:5000"):
         # Use hardcoded device ID from config
         from config import DEVICE_ID
         self.device_id = DEVICE_ID
@@ -132,8 +133,24 @@ class HardwareMonitor:
     def stop(self):
         """Stop the monitoring service"""
         self.running = False
+        
+        # Kill polling_server2.py process
+        try:
+            print("🛑 Stopping polling_server2.py process...")
+            result = subprocess.run(
+                ["pkill", "-f", "polling_server2.py"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                print("✓ polling_server2.py stopped")
+            else:
+                print("✓ polling_server2.py already stopped or not found")
+        except Exception as e:
+            print(f"⚠️ Could not stop polling_server2.py: {e}")
+        
         print("✓ Hardware monitoring stopped")
-        print("💡 To stop the polling server, use: pkill -f polling_server2.py")
     
     def _temperature_loop(self):
         """Background loop with adaptive polling interval"""

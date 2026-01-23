@@ -39,7 +39,7 @@ class ProcessingSpinner(Widget):
                 Ellipse(pos=(x, y), size=(16, 16))
     
     def start_spinning(self):
-        self.spin_event = Clock.schedule_interval(self.spin, 1/60)  # 60 FPS for smooth animation
+        self.spin_event = Clock.schedule_interval(self.spin, 1/30)  # 60 FPS for smooth animation
     
     def stop_spinning(self):
         if hasattr(self, 'spin_event'):

@@ -2,6 +2,24 @@ import requests
 import json
 import time
 
+# Shared session for localhost API calls (polling server)
+# This enables connection pooling for all local API requests
+_localhost_session = None
+
+def get_localhost_session():
+    """Get or create a shared session for localhost API calls"""
+    global _localhost_session
+    if _localhost_session is None:
+        _localhost_session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=5,
+            pool_maxsize=10,
+            max_retries=2
+        )
+        _localhost_session.mount('http://', adapter)
+    return _localhost_session
+
+
 class ApiClient:
     """Class to handle all API interactions"""
     
@@ -238,7 +256,7 @@ class ApiClient:
             
             print(f"🔔 Sending canister level alert for machine {machine_id} (level: {canister_level})")
             
-            response = requests.post(
+            response = self.session.post(
                 self.CANISTER_CHECK_API_URL,
                 data=json.dumps(payload),
                 headers=headers,

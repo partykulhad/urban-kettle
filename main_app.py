@@ -1,5 +1,5 @@
 from kivy.app import App
-from kivy.uix.screenmanager import ScreenManager, Screen, SlideTransition
+from kivy.uix.screenmanager import ScreenManager, Screen, SlideTransition, NoTransition
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.uix.filechooser import FileChooserListView
@@ -12,7 +12,7 @@ import time
 import os
 
 # Import utility modules
-from utils.api_client import ApiClient
+from utils.api_client import ApiClient, get_localhost_session
 from utils.qr_utils import QRUtils
 from utils.hardware_monitor import hardware_monitor
 from utils.screensaver_manager import ScreensaverVideoManager
@@ -70,13 +70,19 @@ class ChaiOrderingApp(App):
         # *** Global machine status monitoring ***
         self.global_status_monitor_event = None
         self.global_status_check_interval = 5  # Check every 5 seconds
+        self.previous_machine_state = None  # Track previous state for transition detection
+        
+        # *** Activity and hardware error monitoring ***
+        self.activity_monitor_event = None
+        self.hardware_error_monitor_event = None
         
         # *** NEW: Cup management variables ***
         self.selected_cups = 1  # Default number of cups
         self.current_cup_number = 1  # Current cup being dispensed
         
-        # Create screen manager with slide transition
-        self.screen_manager = ScreenManager(transition=SlideTransition())
+        # Create screen manager with no transition for faster page changes
+        # SlideTransition can cause perceived lag, NoTransition is instant
+        self.screen_manager = ScreenManager(transition=NoTransition())
         
         # Initialize pages
         self.payment_method_page = PaymentMethodPage(name='payment_method')
@@ -119,7 +125,7 @@ class ChaiOrderingApp(App):
         self.setup_screensaver_monitoring()
         
         # Setup hardware error monitoring
-        self.setup_hardware_error_monitoring()
+       #self.setup_hardware_error_monitoring()
         
         # Set exact 7-inch tablet dimensions (7 inches diagonal)
         # Standard 7-inch tablet: 1024x600 pixels at ~170 PPI
@@ -131,7 +137,7 @@ class ChaiOrderingApp(App):
         Window.maximum_height = 661
         # Lock to exact 7-inch tablet size
         Window.resizable = False
-        Window.fullscreen = 'auto'
+        #Window.fullscreen = 'auto'
         # Start hardware monitoring service
         hardware_monitor.start()
         
@@ -250,10 +256,18 @@ class ChaiOrderingApp(App):
     def show_place_cup_page(self):
         """Show the place cup page"""
         print(f"Showing place cup page for cup {self.current_cup_number} of {self.selected_cups}")
-        # Show the page first
+        
+        # Check if we're already on the place_cup page
+        already_on_page = self.screen_manager.current == 'place_cup'
+        
+        # Show the page
         self.show_page('place_cup')
-        # Explicitly call on_enter to reset page state (Kivy won't call it if already on this screen)
-        self.place_cup_page.on_enter()
+        
+        # Only call on_enter manually if we were already on this page
+        # (Kivy calls it automatically when changing screens)
+        if already_on_page:
+            print("📋 Manually calling on_enter() to reset page for next cup")
+            self.place_cup_page.on_enter()
     
     def start_dispensing_current_cup(self):
         """Start dispensing for the current cup"""
@@ -531,7 +545,7 @@ class ChaiOrderingApp(App):
         # Only start checking if we have a QR code ID
         if self.current_qr_code_id:
             # Schedule the first status check
-            self.status_check_event = Clock.schedule_once(self.check_payment_status, 1)
+            self.status_check_event = Clock.schedule_once(self.check_payment_status, 2)
     
     def check_payment_status(self, dt=None):
         """Check the payment status with the API"""
@@ -550,7 +564,7 @@ class ChaiOrderingApp(App):
             if status_message == "active":
                 # Don't update status text when timer is running - let timer handle the display
                 # Just schedule the next check
-                self.status_check_event = Clock.schedule_once(self.check_payment_status, 1)
+                self.status_check_event = Clock.schedule_once(self.check_payment_status, 2)
                 
             elif status_message == "paid":
                 self.payment_page.update_status("Payment received!")
@@ -566,11 +580,11 @@ class ChaiOrderingApp(App):
                 Clock.schedule_once(lambda dt: self.cancel_payment(auto_cancel=True), 1)
             
             else:  # Unknown status
-                # Schedule another check after 1 second
-                self.status_check_event = Clock.schedule_once(self.check_payment_status, 1)
+                # Schedule another check after 2 seconds
+                self.status_check_event = Clock.schedule_once(self.check_payment_status, 2)
         else:
-            # Try again after 1 second if API call failed
-            self.status_check_event = Clock.schedule_once(self.check_payment_status, 1)
+            # Try again after 2 seconds if API call failed
+            self.status_check_event = Clock.schedule_once(self.check_payment_status, 2)
     
     def cancel_payment(self, auto_cancel=False, timer_expired=False):
         """Cancel the current payment"""
@@ -579,20 +593,24 @@ class ChaiOrderingApp(App):
             self.status_check_event.cancel()
             self.status_check_event = None
         
-        # Call API to cancel payment
-        if self.current_qr_code_id:
-            self.api_client.cancel_payment(self.current_qr_code_id)
-            
-            # Reset QR code ID
-            self.current_qr_code_id = ""
-        
-        # Navigate based on cancellation reason
+        # Navigate immediately (don't wait for API)
         if timer_expired:
             # Show QR expired page when timer expires
             self.show_page('qr_expired')
         elif not auto_cancel or (auto_cancel and self.screen_manager.current == 'payment'):
             # Return to selection page for normal cancellation
             self.show_selection_page()
+        
+        # Call API to cancel payment in background (non-blocking)
+        if self.current_qr_code_id:
+            qr_id = self.current_qr_code_id
+            self.current_qr_code_id = ""  # Reset immediately
+            
+            # Cancel API call in background thread
+            import threading
+            def cancel_in_background():
+                self.api_client.cancel_payment(qr_id)
+            threading.Thread(target=cancel_in_background, daemon=True).start()
     
     def select_video_file(self):
         """Allow user to select a video file for screensaver"""
@@ -639,11 +657,11 @@ class ChaiOrderingApp(App):
         """Setup monitoring for user inactivity to trigger screensaver"""
         # Register user activity events
         Window.bind(on_motion=self.reset_activity_timer)
-        Window.bind(on_key_down=self.reset_activity_timer)
+        Window.bind(on_key_down=self.on_key_press)  # Handle ESC key for exit
         Window.bind(on_touch_down=self.reset_activity_timer)
         
-        # Start monitoring for inactivity
-        Clock.schedule_interval(self.monitor_activity, 1)
+        # Start monitoring for inactivity (store reference for cleanup)
+        self.activity_monitor_event = Clock.schedule_interval(self.monitor_activity, 1)
     
     def reset_activity_timer(self, *args):
         """Reset the activity timer when user interacts with the app"""
@@ -759,8 +777,8 @@ class ChaiOrderingApp(App):
     
     def setup_hardware_error_monitoring(self):
         """Setup monitoring for hardware errors"""
-        # Check for errors every 2 seconds
-        Clock.schedule_interval(self.check_hardware_errors, 2)
+        # Check for errors every 2 seconds (store reference for cleanup)
+        self.hardware_error_monitor_event = Clock.schedule_interval(self.check_hardware_errors, 2)
         
     def check_hardware_errors(self, dt):
         """Check for hardware errors and navigate to error page if needed"""
@@ -870,16 +888,42 @@ class ChaiOrderingApp(App):
             self.heating_check_event = None
             print("⏹️ Stopped heating monitor")
     
+    def on_key_press(self, window, key, *args):
+        """Handle keyboard events"""
+        # ESC key = 27
+        if key == 27:
+            print("\n🚪 ESC key pressed - Shutting down gracefully...")
+            self.stop()
+            return True
+        
+        # Reset activity timer for any other key
+        self.reset_activity_timer(window, key, *args)
+        return False
+    
     def on_stop(self):
         """Called when app is closing"""
+        print("\n🛑 Application closing - Cleaning up...")
+        
         # Stop heating monitor if running
         self.stop_heating_monitor()
         
         # Stop global status monitoring
         self.stop_global_status_monitoring()
         
-        # Stop hardware monitoring
+        # Stop activity monitor if running
+        if self.activity_monitor_event:
+            self.activity_monitor_event.cancel()
+            self.activity_monitor_event = None
+        
+        # Stop hardware error monitor if running
+        if self.hardware_error_monitor_event:
+            self.hardware_error_monitor_event.cancel()
+            self.hardware_error_monitor_event = None
+        
+        # Stop hardware monitoring (this will also stop polling_server2.py)
         hardware_monitor.stop()
+        
+        print("✓ Cleanup complete. Goodbye!\n")
         return super().on_stop()
     
     def start_global_status_monitoring(self):
@@ -903,17 +947,37 @@ class ChaiOrderingApp(App):
     
     def check_global_machine_status(self, dt):
         """Check machine status in background - runs on all pages"""
-        # Don't check if we're already on machine_empty or screensaver page
+        # Don't check if we're on certain pages where interruption would be bad
         current_page = self.screen_manager.current
-        if current_page in ['machine_empty', 'screensaver']:
+        
+        # Skip checking on these pages (user is in active flow)
+        skip_pages = [
+            'machine_empty',      # Already on offline page
+            'screensaver',        # Screensaver active
+            'place_cup',          # User placing cup
+            'dispensing',         # Actively dispensing
+            'thank_you',          # Showing thank you
+            'transaction_processing',  # Processing payment
+            'rfid_auth',          # RFID authentication
+            'heating'             # Tea heating
+        ]
+        
+        if current_page in skip_pages:
             return
         
         # Run check in background thread
         threading.Thread(target=self._do_global_status_check, daemon=True).start()
     
     def _do_global_status_check(self):
-        """Perform global machine status check"""
+        """Perform global machine status check - only on home/selection/payment pages"""
         try:
+            # Only check on pages where user is selecting/paying (not in dispensing flow)
+            current_page = self.screen_manager.current
+            check_pages = ['payment_method', 'selection', 'payment', 'loading']
+            
+            if current_page not in check_pages:
+                return
+            
             # Check machine status
             status_data = self.api_client.check_machine_status(self.MACHINE_ID)
             
@@ -921,6 +985,20 @@ class ChaiOrderingApp(App):
                 data = status_data.get("data", {})
                 machine_status = data.get("status", "offline")
                 is_online = machine_status.lower() == "online"
+                
+                # Detect state transition and notify ESP32
+                if self.previous_machine_state is not None:
+                    if self.previous_machine_state == "online" and not is_online:
+                        # Transition: Online → Offline
+                        print("🔴 Machine state changed: ONLINE → OFFLINE")
+                        self.send_machine_state_to_esp32("OFFLINE", "status_check_offline")
+                    elif self.previous_machine_state == "offline" and is_online:
+                        # Transition: Offline → Online
+                        print("🟢 Machine state changed: OFFLINE → ONLINE")
+                        self.send_machine_state_to_esp32("ONLINE", None)
+                
+                # Update previous state
+                self.previous_machine_state = "online" if is_online else "offline"
                 
                 if not is_online:
                     # Machine went offline - navigate to machine empty page
@@ -938,12 +1016,60 @@ class ChaiOrderingApp(App):
                 
                 if cups_count <= 0:
                     # Cups ran out - navigate to machine empty page
-                    print("⚠️ GLOBAL CHECK: Cups ran out (0 remaining) - navigating to machine empty page")
+                    print("⚠️ GLOBAL CHECK: Cups = 0 - navigating to machine empty page")
                     Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
                     return
                     
         except Exception as e:
             print(f"Global status check error: {e}")
+
+    def send_machine_state_to_esp32(self, state, reason=None):
+        """Send machine state change command to ESP32 device
+        Args:
+            state: "ONLINE" or "OFFLINE"
+            reason: Optional reason for offline state (e.g., "malfunction", "status_check_offline")
+        """
+        def send_in_background():
+            try:
+                import uuid
+                from config import DEVICE_ID
+                
+                command_id = f"cmd_set_{state.lower()}_{uuid.uuid4().hex[:6]}"
+                
+                payload = {
+                    "messageType": "command",
+                    "commandType": "control",
+                    "version": "1.0",
+                    "commandId": command_id,
+                    "deviceId": DEVICE_ID,
+                    "command": {
+                        "action": "set_state",
+                        "parameters": {
+                            "machineState": state
+                        }
+                    }
+                }
+                
+                # Add reason if offline
+                if state == "OFFLINE" and reason:
+                    payload["command"]["parameters"]["reason"] = reason
+                
+                print(f"📡 Sending {state} state to ESP32...")
+                url = "http://localhost:5000/api/device/command"
+                
+                session = get_localhost_session()
+                response = session.post(url, json=payload, timeout=5)
+                
+                if response.status_code == 200:
+                    print(f"✅ ESP32 notified: Machine state set to {state}")
+                else:
+                    print(f"⚠️ Failed to notify ESP32: HTTP {response.status_code}")
+                    
+            except Exception as e:
+                print(f"❌ Error sending state to ESP32: {e}")
+        
+        # Send in background thread to avoid blocking
+        threading.Thread(target=send_in_background, daemon=True).start()
 
 
 if __name__ == "__main__":

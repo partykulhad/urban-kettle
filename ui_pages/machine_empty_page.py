@@ -196,6 +196,15 @@ class MachineEmptyPage(Screen):
                         # Machine is still offline, stay on this page
                         print("Machine is still offline")
                         return
+                    
+                    # Machine is now online - notify ESP32 of state change
+                    # Check if previous state was offline (we're on machine_empty page, so it was)
+                    if hasattr(app, 'previous_machine_state') and app.previous_machine_state == "offline":
+                        print("🟢 Machine state changed: OFFLINE → ONLINE (detected from machine_empty page)")
+                        if hasattr(app, 'send_machine_state_to_esp32'):
+                            app.send_machine_state_to_esp32("ONLINE", None)
+                        # Update the tracked state
+                        app.previous_machine_state = "online"
                 
                 # Check cups count and store locally
                 cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)

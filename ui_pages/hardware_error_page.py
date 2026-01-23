@@ -106,6 +106,15 @@ class HardwareErrorPage(Screen):
             print("Hardware error cleared - Navigating to Home and fetching cups")
             from kivy.app import App
             app = App.get_running_app()
+            
+            # Notify ESP32 that machine is back ONLINE if previous state was offline
+            if hasattr(app, 'previous_machine_state') and app.previous_machine_state == "offline":
+                print("🟢 Machine state changed: OFFLINE → ONLINE (detected from hardware_error page)")
+                if hasattr(app, 'send_machine_state_to_esp32'):
+                    app.send_machine_state_to_esp32("ONLINE", None)
+                # Update the tracked state
+                app.previous_machine_state = "online"
+            
             # Navigate to payment method page (Home) and fetch cups count
             if app.screen_manager.current == self.name:
                 app.show_payment_method_page(fetch_cups=True)

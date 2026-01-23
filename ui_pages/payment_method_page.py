@@ -13,8 +13,8 @@ from kivy.clock import Clock
 import threading
 import time
 import os
-import requests
 from utils.rfid_reader import rfid_reader
+from utils.api_client import get_localhost_session
 
 
 class PremiumPaymentCard(Widget):
@@ -302,7 +302,7 @@ class RFIDInstructionPopup(Popup):
         
         # Close button (X) in top-right corner
         close_btn = Button(
-            text='✕',
+            text='x',
             size_hint=(None, None),
             size=(40, 40),
             pos_hint={'right': 0.95, 'top': 0.95},
@@ -411,14 +411,15 @@ class RFIDInstructionPopup(Popup):
         """Update the countdown display text"""
         self.countdown_label.text = f'Auto-closing in {self.countdown_time} seconds...'
     
-    def dismiss(self, *args):
+    def dismiss(self, *args, **kwargs):
         """Override dismiss to clean up timers"""
         # Cancel countdown timer
         if self.countdown_event:
             self.countdown_event.cancel()
             self.countdown_event = None
         
-        super().dismiss(*args)
+        # Call parent dismiss without arguments
+        super().dismiss()
 
 
 class CupsAvailabilityPopup(Popup):
@@ -1415,8 +1416,9 @@ class PaymentMethodPage(Screen):
             print("⏳ Sending request to polling server...")
             print("="*80)
             
-            # Send POST request with longer timeout for ESP32 response
-            response = requests.post(url, json=payload, timeout=30)
+            # Send POST request with longer timeout for ESP32 response (using pooled session)
+            session = get_localhost_session()
+            response = session.post(url, json=payload, timeout=30)
             
             print("="*80)
             print("📥 RESPONSE RECEIVED")
@@ -1546,7 +1548,14 @@ class PaymentMethodPage(Screen):
         # Enable RFID listening
         self.rfid_listening = True
         
-        # Check RFID auth handler status
+        # Initialize RFID handler in background thread to avoid blocking UI
+        threading.Thread(target=self._init_rfid_handler_background, daemon=True).start()
+        
+        # Start polling for RFID cards (will work if reader is active)
+        self.start_rfid_polling()
+    
+    def _init_rfid_handler_background(self):
+        """Initialize RFID auth handler in background thread to avoid UI lag"""
         from kivy.app import App
         app = App.get_running_app()
         
@@ -1572,9 +1581,6 @@ class PaymentMethodPage(Screen):
         else:
             print("⚠️ RFID Auth Handler exists but reader is not active")
             print("⚠️ Please check if RFID reader is connected")
-        
-        # Start polling for RFID cards (will work if reader is active)
-        self.start_rfid_polling()
     
     def on_leave(self):
         """Called when leaving the screen"""

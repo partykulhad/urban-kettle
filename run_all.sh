@@ -9,6 +9,20 @@ echo "========================================"
 # Navigate to script directory
 cd "$(dirname "$0")"
 
+# Cleanup function to stop all processes
+cleanup() {
+    echo ""
+    echo "🛑 Stopping all Urban Kettle processes..."
+    pkill -f main_app.py
+    pkill -f polling_server2.py
+    docker-compose down 2>/dev/null
+    echo "✓ All processes stopped"
+    exit 0
+}
+
+# Set trap to cleanup on script exit or Ctrl+C
+trap cleanup EXIT INT TERM
+
 # 1. Start Backend Server
 echo "Stopping existing backend..."
 pkill -f polling_server2.py
@@ -37,21 +51,23 @@ export KIVY_WINDOW=sdl2
 export KIVY_GL_BACKEND=gl
 export KIVY_MULTISAMPLES=0
 
-nohup python3 main_app.py > frontend.log 2>&1 &
+python3 main_app.py > frontend.log 2>&1 &
+FRONTEND_PID=$!
 
-sleep 3
-if pgrep -f main_app.py > /dev/null; then
-    echo "✅ Frontend started successfully."
-    echo "📱 UI should be visible on the main display."
-else
-    echo "❌ Frontend failed to start. Check frontend.log"
-    cat frontend.log
-    exit 1
-fi
-
+echo "✅ Frontend started successfully (PID: $FRONTEND_PID)."
+echo "📱 UI should be visible on the main display."
+echo ""
 echo "========================================"
 echo "   System Running"
 echo "========================================"
 echo "Logs available at:"
 echo "  - Backend: $(pwd)/backend.log"
 echo "  - Frontend: $(pwd)/frontend.log"
+echo ""
+echo "Press Ctrl+C to stop all services, or wait for UI to close..."
+echo ""
+
+# Wait for frontend process to exit
+wait $FRONTEND_PID
+echo ""
+echo "👋 UI closed. Cleaning up..."

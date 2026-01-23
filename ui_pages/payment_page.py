@@ -47,6 +47,9 @@ class PaymentPage(Screen):
         self.timer_callback = None
         self.timer_running = False
         
+        # Cancel button debouncing
+        self.cancel_pressed = False
+        
         # Main layout - optimized for 7-inch tablet
         main_layout = BoxLayout(orientation='vertical', padding=[30, 20], spacing=10)
         with main_layout.canvas.before:
@@ -282,7 +285,12 @@ class PaymentPage(Screen):
                 self.payment_status_label.color = (0.4, 0.4, 0.4, 1)  # Gray
     
     def cancel_payment(self, instance):
-        """Handle cancel button click"""
+        """Handle cancel button click - with debouncing"""
+        # Prevent multiple clicks
+        if self.cancel_pressed:
+            return
+        self.cancel_pressed = True
+        
         app = App.get_running_app()
         app.cancel_payment()
     
@@ -349,7 +357,13 @@ class PaymentPage(Screen):
         """Set the callback function to call when timer expires"""
         self.timer_callback = callback
     
+    def on_enter(self, *args):
+        """Called when entering the payment page - reset state"""
+        self.cancel_pressed = False  # Reset cancel button debouncing
+        return super().on_enter(*args)
+    
     def on_leave(self, *args):
         """Called when leaving the payment page - stop timer"""
         self.stop_timer()
+        self.cancel_pressed = False  # Reset cancel button debouncing
         return super().on_leave(*args)

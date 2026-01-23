@@ -202,7 +202,7 @@ class SelectionPage(Screen):
         
         # Touch debouncing variables for Raspberry Pi touchscreen
         self.last_button_press_time = 0
-        self.button_cooldown = 0.2  # 200ms cooldown to prevent multiple rapid touches
+        self.button_cooldown = 0.1  # 100ms cooldown - fast but prevents accidental double-tap
         
         # Inactivity timer variables
         self.inactivity_timeout = 10  # 10 seconds

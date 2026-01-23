@@ -27,8 +27,47 @@ command_history = {}  # command_id -> command execution history
 health_history = {}  # device_id -> list of recent health checks
 ota_updates = {}  # ota_update_id -> ota_info
 
+# Command history limits (prevent memory leak)
+COMMAND_HISTORY_MAX_ENTRIES = 1000
+COMMAND_HISTORY_TTL_HOURS = 24
+
 # Thread-safe lock
 lock = threading.Lock()
+
+def prune_command_history():
+    """Remove old command history entries to prevent memory leak"""
+    global command_history
+    now = datetime.now()
+    
+    with lock:
+        # Remove entries older than TTL
+        expired_ids = []
+        for cmd_id, cmd_data in command_history.items():
+            queued_at = cmd_data.get('queued_at')
+            if queued_at:
+                try:
+                    queued_time = datetime.fromisoformat(queued_at)
+                    age_hours = (now - queued_time).total_seconds() / 3600
+                    if age_hours > COMMAND_HISTORY_TTL_HOURS:
+                        expired_ids.append(cmd_id)
+                except:
+                    pass
+        
+        for cmd_id in expired_ids:
+            del command_history[cmd_id]
+        
+        # If still over limit, remove oldest entries
+        if len(command_history) > COMMAND_HISTORY_MAX_ENTRIES:
+            # Sort by queued_at and keep only the newest entries
+            sorted_entries = sorted(
+                command_history.items(),
+                key=lambda x: x[1].get('queued_at', ''),
+                reverse=True
+            )
+            command_history = dict(sorted_entries[:COMMAND_HISTORY_MAX_ENTRIES])
+        
+        if expired_ids:
+            print(f"🧹 Pruned {len(expired_ids)} expired command history entries")
 
 def log_json(endpoint, direction, data):
     """Log full JSON with timestamp"""
@@ -584,5 +623,15 @@ if __name__ == '__main__':
     print("="*80)
     print("\nServer running on http://0.0.0.0:5000")
     print("All JSON requests/responses will be logged below:\n")
+    
+    # Start background thread for command history pruning (every 5 minutes)
+    def pruning_loop():
+        while True:
+            time.sleep(300)  # 5 minutes
+            prune_command_history()
+    
+    pruning_thread = threading.Thread(target=pruning_loop, daemon=True)
+    pruning_thread.start()
+    print("🧹 Command history pruning enabled (max 1000 entries, 24-hour TTL)")
 
     app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)

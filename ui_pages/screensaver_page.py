@@ -21,6 +21,8 @@ class VideoWidget(Widget):
         self.is_playing = False
         self.video_event = None
         self.texture = None
+        self._texture_size = (0, 0)  # Track texture size to enable reuse
+        self._rect = None  # Persistent rectangle reference for texture updates
         
         # Create texture for video frames
         self.bind(size=self.update_video_size)
@@ -73,6 +75,9 @@ class VideoWidget(Widget):
             # Convert frame from BGR to RGB
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
+            # Flip frame vertically (OpenCV uses top-left origin, Kivy uses bottom-left)
+            frame = cv2.flip(frame, 0)
+            
             # Get widget dimensions (ensure they're integers and not zero)
             widget_w = max(1, int(self.width))
             widget_h = max(1, int(self.height))
@@ -80,16 +85,25 @@ class VideoWidget(Widget):
             # Resize frame to exactly match widget size (stretch to fill)
             frame = cv2.resize(frame, (widget_w, widget_h))
             
-            # Create texture from resized frame
-            self.texture = Texture.create(size=(widget_w, widget_h))
-            self.texture.blit_buffer(frame.flatten(), colorfmt='rgb', bufferfmt='ubyte')
-            self.texture.flip_vertical()
+            # Reuse existing texture if size matches, otherwise create new one
+            current_size = (widget_w, widget_h)
+            if self.texture is None or self._texture_size != current_size:
+                self.texture = Texture.create(size=current_size)
+                self._texture_size = current_size
+                # Rebuild canvas only when texture is recreated
+                self.canvas.clear()
+                with self.canvas:
+                    Color(1, 1, 1, 1)
+                    self._rect = Rectangle(texture=self.texture, pos=self.pos, size=self.size)
             
-            # Update canvas to fill the entire widget
-            self.canvas.clear()
-            with self.canvas:
-                Color(1, 1, 1, 1)
-                Rectangle(texture=self.texture, pos=self.pos, size=self.size)
+            # Update texture buffer (reuses existing GPU texture)
+            self.texture.blit_buffer(frame.tobytes(), colorfmt='rgb', bufferfmt='ubyte')
+            
+            # Update rectangle texture reference and position/size if needed
+            if self._rect:
+                self._rect.texture = self.texture
+                self._rect.pos = self.pos
+                self._rect.size = self.size
         else:
             # Restart video when it ends
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -105,6 +119,9 @@ class VideoWidget(Widget):
         if self.cap and self.cap.isOpened():
             self.cap.release()
             self.cap = None
+        # Reset texture tracking for clean restart
+        self._texture_size = (0, 0)
+        self._rect = None
     
     def show_placeholder(self):
         """Show placeholder when video is not available"""
@@ -141,36 +158,7 @@ class ScreensaverPage(Screen):
         main_layout.bind(size=self._update_video_size, pos=self._update_video_pos)
         main_layout.add_widget(self.video_widget)
         
-        # Overlay with branding (subtle) - positioned on top
-        overlay = AnchorLayout(anchor_x='right', anchor_y='bottom', size_hint=(1, 1))
-        
-        # Brand label with transparency
-        brand_container = BoxLayout(orientation='vertical', size_hint=(None, None), 
-                                  size=(200, 80), padding=[10, 10])
-        
-        brand_label = Label(
-            text='Urban [color=b67a2d]ketl[/color]',
-            font_size='18sp',
-            markup=True,
-            bold=True,
-            color=(1, 1, 1, 0.7),  # Semi-transparent white
-            size_hint_y=None,
-            height='30sp'
-        )
-        
-        tagline = Label(
-            text='Authentic milk chai',
-            font_size='12sp',
-            color=(1, 1, 1, 0.5),  # More transparent
-            size_hint_y=None,
-            height='20sp'
-        )
-        
-        brand_container.add_widget(brand_label)
-        brand_container.add_widget(tagline)
-        overlay.add_widget(brand_container)
-        
-        main_layout.add_widget(overlay)
+        # No overlay - just video (branding removed as requested)
         
         self.add_widget(main_layout)
         
@@ -200,5 +188,20 @@ class ScreensaverPage(Screen):
         self.video_widget.start_video()
     
     def on_leave(self):
-        """Called when screen is left - stop video"""
-        self.video_widget.stop_video()
+        """Called when screen is left - stop video in background to avoid UI lag"""
+        # Stop video in background thread to prevent blocking UI during transition
+        import threading
+        threading.Thread(target=self.video_widget.stop_video, daemon=True).start()
+    
+    def on_touch_down(self, touch):
+        """Handle touch to immediately exit screensaver"""
+        from kivy.app import App
+        app = App.get_running_app()
+        
+        # Immediately deactivate screensaver on touch
+        if app.screensaver_active:
+            print("👆 Screensaver touched - exiting immediately")
+            app.deactivate_screensaver()
+            return True  # Consume the touch event
+        
+        return super(ScreensaverPage, self).on_touch_down(touch)

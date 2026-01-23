@@ -11,9 +11,9 @@ from kivy.core.window import Window
 from kivy.clock import Clock
 from kivy.app import App
 import os
-import requests
 import threading
 import uuid
+from utils.api_client import get_localhost_session
 
 
 class PlaceCupPage(Screen):
@@ -177,6 +177,10 @@ class PlaceCupPage(Screen):
         self.cup_detected_time = None
         self.testing_mode_enabled = False  # Flag for testing mode
         self.error_popup_count = 0  # Track number of error popups shown
+        
+        # PRODUCTION FIX: Button debouncing to prevent multiple dispenses
+        self.button_pressed = False  # Track if button already pressed
+        self.dispense_in_progress = False  # Track if dispense command sent
     
     def _update_rect(self, instance, value):
         self.rect.size = instance.size
@@ -232,8 +236,9 @@ class PlaceCupPage(Screen):
             print("⏳ Sending request to polling server...")
             print("="*80)
             
-            # Send POST request with longer timeout for ESP32 response
-            response = requests.post(url, json=payload, timeout=30)
+            # Send POST request with longer timeout for ESP32 response (using pooled session)
+            session = get_localhost_session()
+            response = session.post(url, json=payload, timeout=30)
             
             print("="*80)
             print("📥 RESPONSE RECEIVED")
@@ -396,6 +401,10 @@ class PlaceCupPage(Screen):
         self.stop_cup_sensor_check()
         self.stop_page_timeout()
         
+        # Reset debouncing flags for next action
+        self.button_pressed = False
+        self.dispense_in_progress = False
+        
         # Check if this is the final cup (with safety checks for testing)
         if hasattr(app, 'current_cup_number') and hasattr(app, 'selected_cups'):
             if app.current_cup_number >= app.selected_cups:
@@ -417,11 +426,29 @@ class PlaceCupPage(Screen):
         self.stop_cup_sensor_check()
         self.stop_page_timeout()
         
+        # Reset debouncing flags
+        self.button_pressed = False
+        self.dispense_in_progress = False
+        
         app = App.get_running_app()
         Clock.schedule_once(lambda dt: app.show_payment_method_page(), 0)
     
     def on_continue_pressed(self, instance):
-        """Handle continue button press"""
+        """Handle continue button press - PRODUCTION: Debounced to prevent multiple dispenses"""
+        
+        # PRODUCTION FIX: Prevent multiple rapid taps
+        if self.button_pressed or self.dispense_in_progress:
+            print("⚠️ Button already pressed - ignoring duplicate tap")
+            return
+        
+        # Mark button as pressed immediately
+        self.button_pressed = True
+        self.dispense_in_progress = True
+        
+        # Disable button immediately to prevent further taps
+        self.continue_button.disabled = True
+        self.continue_button.opacity = 0.5
+        
         print("\n" + "="*80)
         print("🎯 CONFIRM TO DISPENSE BUTTON PRESSED")
         print("="*80)
@@ -450,13 +477,19 @@ class PlaceCupPage(Screen):
                 print("✅ Status code 200 received - navigating to dispensing page")
                 Clock.schedule_once(lambda dt: app.start_dispensing_current_cup(), 0)
             elif status_code in [700, 701, 704, 705, 706, 707, 711]:
-                # Technical error - show popup
+                # Technical error - show popup and reset button state
                 print(f"⚠️ Technical error {status_code} - showing popup")
                 Clock.schedule_once(lambda dt: self.show_technical_error_popup(status_code), 0)
+                # Reset button state on error
+                self.button_pressed = False
+                self.dispense_in_progress = False
             else:
-                # Other error - show generic error
+                # Other error - show generic error and reset
                 print(f"❌ Error status code {status_code} - showing error popup")
                 Clock.schedule_once(lambda dt: self.show_technical_error_popup(status_code or 999), 0)
+                # Reset button state on error
+                self.button_pressed = False
+                self.dispense_in_progress = False
         
         threading.Thread(target=send_command_and_wait, daemon=True).start()
         print("="*80 + "\n")
@@ -465,7 +498,17 @@ class PlaceCupPage(Screen):
     def on_enter(self):
         """Called when page is entered"""
         import time
-        # Reset state
+        # Reset state (but not if dispense is in progress)
+        if not hasattr(self, 'dispense_in_progress'):
+            self.dispense_in_progress = False
+        
+        if self.dispense_in_progress:
+            print("⏸️ Dispense in progress - skipping timeout initialization")
+            return
+        
+        # Reset debouncing flags for fresh page entry (new payment or next cup)
+        self.button_pressed = False
+        
         self.page_entered_time = time.time()
         self.cup_detected_time = None
         self.testing_mode_enabled = False  # Reset testing mode flag
@@ -489,12 +532,16 @@ class PlaceCupPage(Screen):
         self.start_page_timeout()
         
         # TESTING: Auto-enable button after 5 seconds (remove this later)
-        # print("⏱️ TESTING MODE: Button will auto-enable after 5 seconds")
-        # Clock.schedule_once(self.auto_enable_button_for_testing, 5)
+       #print("⏱️ TESTING MODE: Button will auto-enable after 5 seconds")
+       #Clock.schedule_once(self.auto_enable_button_for_testing, 5)
     
     def on_leave(self):
         """Called when page is left"""
         # No video to stop - using static image
+        
+        # Reset dispense and button flags when leaving
+        self.dispense_in_progress = False
+        self.button_pressed = False
         
         # Stop checking cup sensor
         self.stop_cup_sensor_check()
@@ -502,26 +549,28 @@ class PlaceCupPage(Screen):
         self.stop_page_timeout()
     
     def start_cup_sensor_check(self):
-        """Start periodic cup sensor checking (every 1 second)"""
-        print("🔍 Starting cup detection polling (every 1 second)...")
-        self.cup_check_event = Clock.schedule_interval(self.check_cup_sensor, 1.0)  # Every 1 second
+        """Start cup sensor checking using a single background thread"""
+        print("🔍 Starting cup detection polling (background thread)...")
+        self._cup_check_running = True
+        self._cup_check_thread = threading.Thread(target=self._cup_check_loop, daemon=True)
+        self._cup_check_thread.start()
     
     def stop_cup_sensor_check(self):
         """Stop checking cup sensor"""
-        if self.cup_check_event:
-            self.cup_check_event.cancel()
-            self.cup_check_event = None
+        self._cup_check_running = False
+        # Thread will exit on next iteration
     
-    def check_cup_sensor(self, dt):
-        """Poll request_cup API every 1 second"""
-        import threading
-        # Check in background thread
-        threading.Thread(target=self._do_cup_check, daemon=True).start()
+    def _cup_check_loop(self):
+        """Background thread loop for cup detection - runs every 1 second"""
+        import time
+        while self._cup_check_running:
+            self._do_cup_check()
+            # Sleep for 1 second before next check
+            time.sleep(1.0)
     
     def _do_cup_check(self):
         """Poll request_cup API"""
         try:
-            import requests
             from config import DEVICE_ID
             
             url = "http://localhost:5000/api/device/command"
@@ -532,7 +581,9 @@ class PlaceCupPage(Screen):
                 "deviceId": DEVICE_ID
             }
             
-            response = requests.post(url, json=payload, timeout=2)
+            # Use pooled session for connection reuse
+            session = get_localhost_session()
+            response = session.post(url, json=payload, timeout=2)
             
             if response.status_code == 200:
                 result = response.json()
