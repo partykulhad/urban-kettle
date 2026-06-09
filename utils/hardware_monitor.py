@@ -5,21 +5,21 @@ Runs in background to monitor temperature and cup status
 
 import threading
 import time
+import uuid
 import requests
-from datetime import datetime
 import subprocess
-import sys
-import os
-import socket
+from config import MACHINE_ID, PT100_SENSOR_ID
+from utils.api_client import get_localhost_session
 
 
 class HardwareMonitor:
     """Background service for hardware monitoring"""
     
-    def __init__(self, machine_id="KH-01", api_base_url="http://192.168.68.136:5000"):
-        # Use hardcoded device ID from config
-        from config import DEVICE_ID
+    def __init__(self, machine_id=MACHINE_ID, api_base_url=None):
+        from config import DEVICE_ID, POLLING_SERVER_URL
         self.device_id = DEVICE_ID
+        if api_base_url is None:
+            api_base_url = POLLING_SERVER_URL
         print(f"Initialized HardwareMonitor with Device ID: {self.device_id}")
         
         self.machine_id = machine_id
@@ -30,8 +30,13 @@ class HardwareMonitor:
         self.server_process = None
         
         self.last_temperature = None
-        self.last_cup_status = None
+        # self.last_cup_status = None  # Cup sensor disabled
         self.handshake_complete = False
+        
+        # Cloud API for temperature reporting (every 2 minutes)
+        self.cloud_api_url = "https://kulhad.vercel.app/api/machine-temperature"
+        self.cloud_temp_thread = None
+        self.CLOUD_TEMP_INTERVAL = 120  # 2 minutes in seconds
         
         # Adaptive polling strategy
         self.consecutive_success_count = 0  # Count consecutive 200 responses
@@ -46,13 +51,19 @@ class HardwareMonitor:
         self._connection_check_lock = threading.Lock()
         self._background_check_running = False
 
+        # Slow-path lock: ensures only one health_check command is in-flight at a time.
+        # _temperature_loop and check_idle_temperature both call _fetch_temperature() from
+        # background threads; without this, a stale cache causes them to both queue a
+        # health_check simultaneously.
+        self._slow_path_lock = threading.Lock()
+
     def check_polling_server(self):
         """Check if polling server is running (no Docker startup)"""
         try:
             print(f"🔍 Checking polling server at {self.api_base_url}...")
             
             # Check if server is responding
-            response = requests.get(f"{self.api_base_url}/api/status", timeout=2)
+            response = get_localhost_session().get(f"{self.api_base_url}/api/status", timeout=2)
             if response.status_code == 200:
                 print(f"✅ Polling server is RUNNING at {self.api_base_url}")
                 print(f"📡 Waiting for ESP32 handshake...")
@@ -79,7 +90,7 @@ class HardwareMonitor:
                 try:
                     # Check if device is connected
                     url = f"{self.api_base_url}/api/devices"
-                    response = requests.get(url, timeout=2)
+                    response = get_localhost_session().get(url, timeout=2)
                     
                     if response.status_code == 200:
                         data = response.json()
@@ -87,13 +98,9 @@ class HardwareMonitor:
                         
                         # If any device is connected, accept it
                         if len(devices) > 0:
-                            # Pick the first device found
-                            device = devices[0]
-                            found_id = device.get('deviceId')
-                            
+                            # Device is connected — keep the DEVICE_ID from config.py
                             self.handshake_complete = True
-                            self.device_id = found_id
-                            print(f"✓ Device connected! ID: {self.device_id}")
+                            print(f"✓ Device connected! Using config DEVICE_ID: {self.device_id}")
                             return
                         
                 except Exception as e:
@@ -128,7 +135,12 @@ class HardwareMonitor:
         self.temp_thread = threading.Thread(target=self._temperature_loop, daemon=True)
         self.temp_thread.start()
         
+        # Start cloud temperature reporting thread (every 2 minutes)
+        self.cloud_temp_thread = threading.Thread(target=self._cloud_temperature_loop, daemon=True)
+        self.cloud_temp_thread.start()
+        
         print("✓ Hardware monitoring started (waiting for handshake in background)")
+        print(f"✓ Cloud temperature reporting enabled (every {self.CLOUD_TEMP_INTERVAL}s)")
     
     def stop(self):
         """Stop the monitoring service"""
@@ -156,57 +168,155 @@ class HardwareMonitor:
         """Background loop with adaptive polling interval"""
         while self.running:
             try:
-                # Fetch temperature
+                # In heating mode, start_heating_monitor owns all reads directly.
+                # Yield here to avoid competing health_check commands.
+                if self.is_heating_mode:
+                    time.sleep(1)
+                    continue
+
                 temp = self._fetch_temperature()
-                
-                if temp:
+
+                if temp is not None:
                     self.last_temperature = temp
-                    # Temperature sending to DB removed - not needed
-                
-                # Adaptive sleep based on current mode
+
                 time.sleep(self.polling_interval)
-                
+
             except Exception as e:
                 print(f"Temperature monitoring error: {e}")
-                time.sleep(5)  # Wait longer on error
+                time.sleep(5)
     
-    def _fetch_temperature(self):
-        """Fetch temperature via health check command with adaptive polling"""
+    def _cloud_temperature_loop(self):
+        """Background loop to send temperature to cloud API every 2 minutes"""
+        print("☁️ Cloud temperature reporting thread started")
+
+        while self.running:
+            try:
+                # Skip cloud reporting during heating mode — start_heating_monitor
+                # owns all _fetch_temperature() calls then to avoid command conflicts.
+                if self.is_heating_mode:
+                    time.sleep(30)
+                    continue
+
+                # Use cached temperature if available to avoid an extra health_check
+                temp = self.last_temperature if self.last_temperature is not None \
+                       else self._fetch_temperature()
+
+                if temp is not None:
+                    self._send_temperature_to_cloud(temp)
+                else:
+                    print("☁️ No temperature available to send to cloud")
+
+                time.sleep(self.CLOUD_TEMP_INTERVAL)
+
+            except Exception as e:
+                print(f"☁️ Cloud temperature loop error: {e}")
+                time.sleep(30)
+    
+    def _send_temperature_to_cloud(self, temperature):
+        """Send temperature to cloud API
+        
+        Args:
+            temperature: Current temperature in Celsius
+        """
         try:
-            if not self.api_base_url or not self.device_id:
-                return None
+            from config import MACHINE_ID
             
-            # Send health check command
-            url = f"{self.api_base_url}/api/device/command"
             payload = {
-                "messageType": "command",
-                "commandType": "control",
-                "version": "1.0",
-                "commandId": f"cmd_temp_check_{int(time.time())}",
-                "deviceId": self.device_id,
-                "command": {"action": "health_check"}
+                "machineId": MACHINE_ID,
+                "temperature": temperature
             }
             
-            response = requests.post(url, json=payload, timeout=3)
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.post(
+                self.cloud_api_url,
+                json=payload,
+                headers=headers,
+                timeout=10
+            )
             
             if response.status_code == 200:
                 result = response.json()
-                checks = result.get('checks', {})
-                
-                # Update adaptive polling logic
-                self._update_polling_interval(success=True)
-                
-                # Look for PT100 sensor
-                pt100_list = checks.get('sensor:pt100_sensor_01', [])
-                if pt100_list:
-                    temp = pt100_list[0].get('observedValue')
-                    return temp
+                if result.get('success'):
+                    print(f"☁️ Temperature sent to cloud: {temperature}°C (Machine: {MACHINE_ID})")
+                else:
+                    print(f"☁️ Cloud API returned success=false: {result}")
             else:
-                self._update_polling_interval(success=False)
-            
-        except:
+                print(f"☁️ Cloud API error: HTTP {response.status_code}")
+                
+        except requests.exceptions.Timeout:
+            print("☁️ Cloud API timeout - will retry next interval")
+        except requests.exceptions.ConnectionError:
+            print("☁️ Cloud API connection error - will retry next interval")
+        except Exception as e:
+            print(f"☁️ Error sending temperature to cloud: {e}")
+    
+    def _fetch_temperature(self):
+        """Fetch temperature. Tries cached health data first (instant), falls back to
+        a full health_check command if cache is absent or stale (> 90 seconds old)."""
+        try:
+            if not self.api_base_url or not self.device_id:
+                return None
+
+            # --- Fast path: use temperature cached from ESP32's periodic health POST ---
+            try:
+                cache_url = f"{self.api_base_url}/api/device/{self.device_id}/temperature"
+                cache_resp = get_localhost_session().get(cache_url, timeout=2)
+                if cache_resp.status_code == 200:
+                    cache_data = cache_resp.json()
+                    pt100 = cache_data.get('pt100_temperature')
+                    ts = cache_data.get('timestamp')
+                    if pt100 is not None and ts:
+                        from datetime import datetime as _dt
+                        age = (time.time() -
+                               _dt.fromisoformat(ts).timestamp())
+                        if age < 90:
+                            self._update_polling_interval(success=True)
+                            return float(pt100)
+            except Exception:
+                pass
+
+            # --- Slow path: send health_check command and wait for ESP32 response ---
+            # Non-blocking acquire: if another thread already owns the lock it is
+            # already fetching a fresh reading — return the cached value immediately
+            # rather than queuing a second health_check command.
+            if not self._slow_path_lock.acquire(blocking=False):
+                return float(self.last_temperature) if self.last_temperature is not None else None
+
+            try:
+                url = f"{self.api_base_url}/api/device/command"
+                payload = {
+                    "messageType": "command",
+                    "commandType": "control",
+                    "version": "1.0",
+                    "commandId": f"cmd_temp_check_{uuid.uuid4().hex[:12]}",
+                    "deviceId": self.device_id,
+                    "command": {"action": "health_check"}
+                }
+
+                # 35s: one ESP32 poll cycle. Cache-first path above means this rarely fires.
+                response = get_localhost_session().post(url, json=payload, timeout=35)
+
+                if response.status_code == 200:
+                    result = response.json()
+                    checks = result.get('checks', {})
+
+                    self._update_polling_interval(success=True)
+
+                    pt100_list = checks.get(f'sensor:{PT100_SENSOR_ID}', [])
+                    if pt100_list:
+                        temp = pt100_list[0].get('observedValue')
+                        return temp
+                else:
+                    self._update_polling_interval(success=False)
+            finally:
+                self._slow_path_lock.release()
+
+        except Exception:
             self._update_polling_interval(success=False)
-        
+
         return None
     
     def _update_polling_interval(self, success):
@@ -248,50 +358,50 @@ class HardwareMonitor:
         else:
             self.polling_interval = 1
     
-    def get_cup_status(self):
-        """Get current cup sensor status via health check command"""
-        try:
-            if not self.api_base_url or not self.device_id:
-                return None
-            
-            # Send health check command
-            url = f"{self.api_base_url}/api/device/command"
-            payload = {
-                "messageType": "command",
-                "commandType": "control",
-                "version": "1.0",
-                "commandId": f"cmd_cup_check_{int(time.time())}",
-                "deviceId": self.device_id,
-                "command": {"action": "health_check"}
-            }
-            
-            response = requests.post(url, json=payload, timeout=3)
-            
-            if response.status_code == 200:
-                result = response.json()
-                checks = result.get('checks', {})
-                
-                # Look for cup sensor
-                for key in ['sensor:cup_sensor_01', 'cup_sensor_01']:
-                    if key in checks:
-                        cup_data = checks[key]
-                        if isinstance(cup_data, list) and len(cup_data) > 0:
-                            cup_data = cup_data[0]
-                        
-                        cup_value = cup_data.get('observedValue', 'no_cup')
-                        
-                        # Determine if cup is present
-                        is_present = cup_value in ['cup_present', 'cup', 'present', 'yes', 'true', '1']
-                        self.last_cup_status = is_present
-                        return is_present
-                
-                # Default: no cup (if no data found)
-                return False
-            
-        except Exception as e:
-            print(f"Cup status check error: {e}")
-        
-        return None
+    # def get_cup_status(self):
+    #     """Get current cup sensor status via health check command"""
+    #     try:
+    #         if not self.api_base_url or not self.device_id:
+    #             return None
+    #         
+    #         # Send health check command
+    #         url = f"{self.api_base_url}/api/device/command"
+    #         payload = {
+    #             "messageType": "command",
+    #             "commandType": "control",
+    #             "version": "1.0",
+    #             "commandId": f"cmd_cup_check_{int(time.time())}",
+    #             "deviceId": self.device_id,
+    #             "command": {"action": "health_check"}
+    #         }
+    #         
+    #         response = requests.post(url, json=payload, timeout=3)
+    #         
+    #         if response.status_code == 200:
+    #             result = response.json()
+    #             checks = result.get('checks', {})
+    #             
+    #             # Look for cup sensor
+    #             for key in ['sensor:cup_sensor_01', 'cup_sensor_01']:
+    #                 if key in checks:
+    #                     cup_data = checks[key]
+    #                     if isinstance(cup_data, list) and len(cup_data) > 0:
+    #                         cup_data = cup_data[0]
+    #                     
+    #                     cup_value = cup_data.get('observedValue', 'no_cup')
+    #                     
+    #                     # Determine if cup is present
+    #                     is_present = cup_value in ['cup_present', 'cup', 'present', 'yes', 'true', '1']
+    #                     self.last_cup_status = is_present
+    #                     return is_present
+    #             
+    #             # Default: no cup (if no data found)
+    #             return False
+    #         
+    #     except Exception as e:
+    #         print(f"Cup status check error: {e}")
+    #     
+    #     return None
     
     def get_temperature(self):
         """Get last known temperature"""
@@ -301,38 +411,15 @@ class HardwareMonitor:
         """Get PT100 sensor temperature for heating check via health check command
         Returns: temperature in Celsius or None if unavailable
         """
-        try:
-            if not self.api_base_url or not self.device_id:
-                return None
-            
-            # Send health check command
-            url = f"{self.api_base_url}/api/device/command"
-            payload = {
-                "messageType": "command",
-                "commandType": "control",
-                "version": "1.0",
-                "commandId": f"cmd_pt100_check_{int(time.time())}",
-                "deviceId": self.device_id,
-                "command": {"action": "health_check"}
-            }
-            
-            response = requests.post(url, json=payload, timeout=3)
-            
-            if response.status_code == 200:
-                result = response.json()
-                checks = result.get('checks', {})
-                
-                # Look for PT100 sensor (tea heating temperature)
-                pt100_list = checks.get('sensor:pt100_sensor_01', [])
-                if pt100_list and len(pt100_list) > 0:
-                    temp = pt100_list[0].get('observedValue')
-                    if temp is not None:
-                        return float(temp)
-            
-        except Exception as e:
-            print(f"PT100 temperature check error: {e}")
-        
-        return None
+        # In heating mode _temperature_loop owns ALL polling (cache-first, 35s slow-path).
+        # Always
+        # return the cached value — even if still None — to avoid a second
+        # concurrent health_check command that would flood the command queue.
+        if self.is_heating_mode:
+            return float(self.last_temperature) if self.last_temperature is not None else None
+
+        # Delegate to _fetch_temperature which already tries cache-first
+        return self._fetch_temperature()
     
     def is_device_connected(self):
         """Check if device is connected (cached, adaptive timing)
@@ -381,7 +468,7 @@ class HardwareMonitor:
             def check_devices():
                 try:
                     url = f"{self.api_base_url}/api/devices"
-                    response = requests.get(url, timeout=2)
+                    response = get_localhost_session().get(url, timeout=2)
                     
                     if response.status_code == 200:
                         devices = response.json().get('devices', [])
@@ -394,29 +481,23 @@ class HardwareMonitor:
                     pass
             
             def check_health():
+                # Use the cached temperature endpoint — no command queued, no server thread tied up.
+                # If the ESP32 sent a health POST within the last 60s it's alive.
                 try:
-                    url = f"{self.api_base_url}/api/device/command"
-                    payload = {
-                        "messageType": "command",
-                        "commandType": "control",
-                        "version": "1.0",
-                        "commandId": "cmd_health_check",
-                        "deviceId": self.device_id,
-                        "command": {"action": "health_check"}
-                    }
-                    response = requests.post(url, json=payload, timeout=5)
-                    
+                    url = f"{self.api_base_url}/api/device/{self.device_id}/temperature"
+                    response = get_localhost_session().get(url, timeout=2)
                     if response.status_code == 200:
-                        result = response.json()
-                        # Check both top-level statusCode and response.statusCode
-                        status_code = result.get('statusCode') or result.get('response', {}).get('statusCode')
-                        
-                        if status_code == 200:
-                            health_check[0] = True
-                            completed_event.set()
-                            print(f"✅ Health check passed (statusCode: {status_code})")
+                        data = response.json()
+                        ts = data.get('timestamp')
+                        if ts:
+                            from datetime import datetime as _dt
+                            age = time.time() - _dt.fromisoformat(ts).timestamp()
+                            if age < 60:
+                                health_check[0] = True
+                                completed_event.set()
+                                print(f"✅ Device alive — last health POST {age:.0f}s ago")
                 except Exception as e:
-                    print(f"Health check failed: {e}")
+                    print(f"Health cache check failed: {e}")
                     pass
             
             # Run both in parallel
@@ -456,28 +537,46 @@ class HardwareMonitor:
             if not self.api_base_url or not self.device_id:
                 print("DEBUG: Configuration missing (api_base_url or device_id)")
                 return "Internal Error: Configuration Missing"
-                
-            # Check connection first
-            print(f"DEBUG: Checking if device connected (Base URL: {self.api_base_url})")
-            if not self.is_device_connected():
-                print("DEBUG: Device NOT connected - returning error")
-                return "Hardware Not Connected"
-            
+
+            # Fast liveness check via cached health data (no command sent).
+            # If ESP32 posted health data recently it's alive — skip is_device_connected().
+            _cache_alive = False
+            try:
+                _cr = get_localhost_session().get(
+                    f"{self.api_base_url}/api/device/{self.device_id}/temperature", timeout=2)
+                if _cr.status_code == 200:
+                    _ts = _cr.json().get('timestamp')
+                    if _ts:
+                        from datetime import datetime as _dt2
+                        _age = time.time() - _dt2.fromisoformat(_ts).timestamp()
+                        _cache_alive = _age < 60
+            except Exception:
+                pass
+
+            if not _cache_alive:
+                # Fall back to the full connection check (checks /api/devices)
+                print(f"DEBUG: Checking if device connected (Base URL: {self.api_base_url})")
+                if not self.is_device_connected():
+                    print("DEBUG: Device NOT connected - returning error")
+                    return "Hardware Not Connected"
+            else:
+                print("DEBUG: Device alive (recent health POST)")
+
             print("DEBUG: Device IS connected - checking for CRITICAL errors only")
-            
+
             # Send health check command directly to get fresh status
             url = f"{self.api_base_url}/api/device/command"
             payload = {
                 "messageType": "command",
                 "commandType": "control",
                 "version": "1.0",
-                "commandId": f"cmd_health_check_{int(time.time())}",
+                "commandId": f"cmd_health_check_{uuid.uuid4().hex[:12]}",
                 "deviceId": self.device_id,
                 "command": {"action": "health_check"}
             }
             
             print(f"DEBUG: Sending health check command to {url}")
-            response = requests.post(url, json=payload, timeout=15)
+            response = get_localhost_session().post(url, json=payload, timeout=35)
             
             if response.status_code == 200:
                 result = response.json()
@@ -495,13 +594,13 @@ class HardwareMonitor:
                 if status_code == 200:
                     print("DEBUG: Health check succeeded (statusCode 200), checking components...")
                     
-                    # Check PT100 temperature FIRST - if < 83°C, return heating status
-                    pt100_checks = checks.get('sensor:pt100_sensor_01', [])
+                    # Check PT100 temperature FIRST - if < 80°C, return heating status
+                    pt100_checks = checks.get(f'sensor:{PT100_SENSOR_ID}', [])
                     if pt100_checks:
                         pt100_data = pt100_checks[0]
                         temp = pt100_data.get('observedValue')
                         
-                        if temp is not None and temp < 83:
+                        if temp is not None and temp < __import__('config').SERVING_TEMP:
                             print(f"DEBUG: 🔥 Temperature low ({temp}°C) - Needs heating")
                             return ('HEATING', temp)  # Return tuple to indicate heating needed
                     
@@ -544,13 +643,14 @@ class HardwareMonitor:
                     
                     print("DEBUG: ✅ No critical errors found in component checks")
                     
-                    # Check machine state
+                    # Check machine state - OFFLINE is NOT a hardware error
+                    # It's handled by the global status check which navigates to machine_empty page
                     if machine_state == 'OFFLINE':
-                        reason = result.get('reason', 'Unknown reason')
-                        details = result.get('details', {})
-                        err_msg = details.get('errorMessage') or reason
-                        print(f"DEBUG: Machine is OFFLINE - {err_msg}")
-                        return f"Machine Offline: {err_msg}"
+                        reason = result.get('reason', 'Heater is off')
+                        print(f"DEBUG: Machine is OFFLINE (reason: {reason}) - NOT a hardware error, handled by global status check")
+                        # Return None - let global status check handle OFFLINE state
+                        # This ensures offline goes to machine_empty, not hardware_error
+                        return None
                     
                     # All checks passed!
                     print("DEBUG: ✅ All checks passed - No blocking errors")

@@ -1406,9 +1406,9 @@ class PaymentMethodPage(Screen):
         from kivy.app import App
         app = App.get_running_app()
         
-        # Show transaction processing first, then dispensing
-        app.show_transaction_processing_page()
-        Clock.schedule_once(lambda dt: app.show_dispensing_page(), 4)
+        # Skip transaction processing (commented out) and go directly to dispensing
+        # app.show_transaction_processing_page()  # Commented out - not used
+        Clock.schedule_once(lambda dt: app.show_dispensing_page(), 1.5)
     
     def send_maintenance_solenoid_command(self, duration_ms=10000):
         """Send solenoid control command for maintenance card"""
@@ -1417,22 +1417,24 @@ class PaymentMethodPage(Screen):
             print("🔧 SOLENOID COMMAND - MAINTENANCE MODE")
             print("="*80)
             print(f"🔧 Duration: {duration_ms}ms ({duration_ms/1000}s)")
-            print(f"🔧 Command ID: cmd_solenoid_001")
+            import uuid as _uuid
+            _cmd_id = f"cmd_solenoid_{_uuid.uuid4().hex[:12]}"
+            print(f"🔧 Command ID: {_cmd_id}")
             print(f"🔧 Device ID: UK_14335C5D48C8")
-            
+
             # API endpoint (using localhost for testing)
             # TODO: Change to dynamic IP later for production
             url = "http://localhost:5000/api/device/command"
-            
+
             # Device ID (hardcoded as per requirement)
             device_id = "UK_14335C5D48C8"
-            
+
             # Prepare the request payload
             payload = {
                 "messageType": "command",
                 "commandType": "control",
                 "version": "1.0",
-                "commandId": "cmd_solenoid_001",
+                "commandId": _cmd_id,
                 "deviceId": device_id,
                 "command": {
                     "action": "open_solenoid",
@@ -1450,8 +1452,8 @@ class PaymentMethodPage(Screen):
             print("⏳ Sending request to polling server...")
             print("="*80)
             
-            # Send POST request with longer timeout for ESP32 response
-            response = requests.post(url, json=payload, timeout=30)
+            # 35s: enough for one ESP32 poll cycle + execution
+            response = requests.post(url, json=payload, timeout=35)
             
             print("="*80)
             print("📥 RESPONSE RECEIVED")
@@ -1491,8 +1493,11 @@ class PaymentMethodPage(Screen):
             return False
     
     def navigate_to_machine_empty(self):
-        """Navigate to machine empty page when cups are 0"""
-        self.manager.current = 'machine_empty'
+        """Navigate to machine empty page when cups are 0 (only if on payment_method screen)"""
+        if self.manager.current == 'payment_method':
+            self.manager.current = 'machine_empty'
+        else:
+            print(f"Skipping auto-navigation to machine_empty as user has moved to: {self.manager.current}")
     
     def show_offline_popup_for_rfid(self):
         """Show offline popup for RFID"""

@@ -1,3 +1,9 @@
+kivy[base]
 Flask==3.1.0
+requests
 qrcode[pil]
+Pillow
+numpy
+opencv-python
 psutil>=5.9.0
+pyscard

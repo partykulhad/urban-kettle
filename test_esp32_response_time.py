@@ -138,65 +138,65 @@ class ESP32ResponseTester:
         
         return response_times
     
-    def test_cup_detection(self, iterations=10, interval=1.0):
-        """Test cup detection polling response time"""
-        print("\n" + "="*80)
-        print("🧪 TESTING CUP DETECTION POLLING RESPONSE TIME")
-        print("="*80)
-        print(f"Polling {iterations} times with {interval}s interval")
-        
-        response_times = []
-        
-        for i in range(iterations):
-            url = f"{self.base_url}/api/device/command"
-            payload = {
-                "messageType": "request_cup",
-                "commandType": "request",
-                "version": "1.0",
-                "deviceId": self.device_id
-            }
-            
-            print(f"\n📤 Poll {i+1}/{iterations}: Checking cup detection...")
-            start_time = time.time()
-            
-            try:
-                response = requests.post(url, json=payload, timeout=5)
-                end_time = time.time()
-                response_time = (end_time - start_time) * 1000  # Convert to ms
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    status_code = result.get('statusCode', 'N/A')
-                    cup_status = "Cup Detected" if status_code == 200 else "No Cup"
-                    print(f"✅ Response received in {response_time:.2f}ms")
-                    print(f"   Status: {cup_status} (Code: {status_code})")
-                    response_times.append(response_time)
-                else:
-                    print(f"❌ Failed with HTTP {response.status_code}")
-                    print(f"   Response time: {response_time:.2f}ms")
-                    
-            except requests.Timeout:
-                print(f"⏱️ TIMEOUT after 5 seconds")
-            except Exception as e:
-                print(f"❌ Error: {e}")
-            
-            # Wait between polls
-            if i < iterations - 1:
-                time.sleep(interval)
-        
-        # Statistics
-        if response_times:
-            print("\n" + "="*80)
-            print("📊 CUP DETECTION POLLING STATISTICS")
-            print("="*80)
-            print(f"Total Polls: {len(response_times)}")
-            print(f"Average Response Time: {statistics.mean(response_times):.2f}ms")
-            print(f"Min Response Time: {min(response_times):.2f}ms")
-            print(f"Max Response Time: {max(response_times):.2f}ms")
-            if len(response_times) > 1:
-                print(f"Std Deviation: {statistics.stdev(response_times):.2f}ms")
-        
-        return response_times
+    # def test_cup_detection(self, iterations=10, interval=1.0):
+    #     """Test cup detection polling response time"""
+    #     print("\n" + "="*80)
+    #     print("🧪 TESTING CUP DETECTION POLLING RESPONSE TIME")
+    #     print("="*80)
+    #     print(f"Polling {iterations} times with {interval}s interval")
+    #     
+    #     response_times = []
+    #     
+    #     for i in range(iterations):
+    #         url = f"{self.base_url}/api/device/command"
+    #         payload = {
+    #             "messageType": "request_cup",
+    #             "commandType": "request",
+    #             "version": "1.0",
+    #             "deviceId": self.device_id
+    #         }
+    #         
+    #         print(f"\n📤 Poll {i+1}/{iterations}: Checking cup detection...")
+    #         start_time = time.time()
+    #         
+    #         try:
+    #             response = requests.post(url, json=payload, timeout=5)
+    #             end_time = time.time()
+    #             response_time = (end_time - start_time) * 1000  # Convert to ms
+    #             
+    #             if response.status_code == 200:
+    #                 result = response.json()
+    #                 status_code = result.get('statusCode', 'N/A')
+    #                 cup_status = "Cup Detected" if status_code == 200 else "No Cup"
+    #                 print(f"✅ Response received in {response_time:.2f}ms")
+    #                 print(f"   Status: {cup_status} (Code: {status_code})")
+    #                 response_times.append(response_time)
+    #             else:
+    #                 print(f"❌ Failed with HTTP {response.status_code}")
+    #                 print(f"   Response time: {response_time:.2f}ms")
+    #                 
+    #         except requests.Timeout:
+    #             print(f"⏱️ TIMEOUT after 5 seconds")
+    #         except Exception as e:
+    #             print(f"❌ Error: {e}")
+    #         
+    #         # Wait between polls
+    #         if i < iterations - 1:
+    #             time.sleep(interval)
+    #     
+    #     # Statistics
+    #     if response_times:
+    #         print("\n" + "="*80)
+    #         print("📊 CUP DETECTION POLLING STATISTICS")
+    #         print("="*80)
+    #         print(f"Total Polls: {len(response_times)}")
+    #         print(f"Average Response Time: {statistics.mean(response_times):.2f}ms")
+    #         print(f"Min Response Time: {min(response_times):.2f}ms")
+    #         print(f"Max Response Time: {max(response_times):.2f}ms")
+    #         if len(response_times) > 1:
+    #             print(f"Std Deviation: {statistics.stdev(response_times):.2f}ms")
+    #     
+    #     return response_times
     
     def run_all_tests(self):
         """Run all response time tests"""
@@ -207,8 +207,9 @@ class ESP32ResponseTester:
         print(f"Base URL: {self.base_url}")
         print(f"Device ID: {self.device_id}")
         
-        # Test 1: Cup Detection (most frequent in app)
-        cup_times = self.test_cup_detection(iterations=10, interval=1.0)
+        # Test 1: Cup Detection (Disabled)
+        # cup_times = self.test_cup_detection(iterations=10, interval=1.0)
+        cup_times = []
         
         # Test 2: Pump Status (during dispensing)
         pump_times = self.test_pump_status(iterations=10, interval=0.5)
@@ -221,10 +222,10 @@ class ESP32ResponseTester:
         print("📋 OVERALL SUMMARY")
         print("="*80)
         
-        if cup_times:
-            print(f"\n🔍 Cup Detection:")
-            print(f"   Average: {statistics.mean(cup_times):.2f}ms")
-            print(f"   Range: {min(cup_times):.2f}ms - {max(cup_times):.2f}ms")
+        # if cup_times:
+        #     print(f"\n🔍 Cup Detection:")
+        #     print(f"   Average: {statistics.mean(cup_times):.2f}ms")
+        #     print(f"   Range: {min(cup_times):.2f}ms - {max(cup_times):.2f}ms")
         
         if pump_times:
             print(f"\n⚙️  Pump Status:")

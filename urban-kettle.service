@@ -12,6 +12,8 @@ WorkingDirectory=/home/pi/urban-kettle
 ExecStart=/home/pi/urban-kettle/launch_pi.sh
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=graphical.target

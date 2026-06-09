@@ -1,8 +1,10 @@
+from kivy.app import App
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.image import Image
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, RoundedRectangle, Line
 from kivy.uix.anchorlayout import AnchorLayout
@@ -13,8 +15,13 @@ from kivy.clock import Clock
 import threading
 import time
 import os
-from utils.rfid_reader import rfid_reader
 from utils.api_client import get_localhost_session
+
+
+
+class ClickableImage(ButtonBehavior, Image):
+    """Image widget that behaves like a button"""
+    pass
 
 
 class PremiumPaymentCard(Widget):
@@ -729,7 +736,7 @@ class PaymentMethodPage(Screen):
         
         # Machine status monitoring
         self.status_check_timer = None
-        self.status_check_interval = 3  # Check every 5 seconds
+        self.status_check_interval = 3  # Check every 3 seconds
         
         # RFID card detection variables
         self.rfid_listening = True
@@ -752,11 +759,11 @@ class PaymentMethodPage(Screen):
         # Urban Kettle logo on the left side
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
         if os.path.exists(logo_path):
-            logo_image = Image(
+            logo_image = ClickableImage(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(260, 230),
-                pos_hint={'x': 0.0, 'top': 1.35},  # Moved to very top-left corner
+                size=(220, 100),
+                pos_hint={'x': 0.02, 'top': 0.95},
                 allow_stretch=True,
                 keep_ratio=True
             )
@@ -1003,9 +1010,6 @@ class PaymentMethodPage(Screen):
         self.rect.size = instance.size
         self.rect.pos = instance.pos
     
-    def open_debug_page(self, instance):
-        """Open hardware debug page"""
-        self.manager.current = 'hardware_debug'
     
     def on_upi_selected(self, instance):
         """Navigate to selection page using cached cups count (no API calls needed)"""
@@ -1032,6 +1036,11 @@ class PaymentMethodPage(Screen):
                 
                 # Navigate to selection page
                 self.navigate_to_selection()
+
+                # Prefetch 1-cup QR while user is on selection page.
+                # 1 cup is the most common order — this makes Confirm instant for that path.
+                # If user backs out, selection_page.on_back_pressed cancels it cleanly.
+                app.trigger_qr_prefetch(1)
         else:
             # Fallback - just ignore if cups counter not available
             print("Cups counter not available, ignoring click")
@@ -1108,15 +1117,13 @@ class PaymentMethodPage(Screen):
                 
                 # Check cups count and store locally
                 cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)
-                
+
                 if cups_data and cups_data.get("success", False):
                     cups_count = cups_data.get("cups", 0)
-                    # Store locally
                     Clock.schedule_once(lambda dt: app.set_local_cups_count(cups_count))
                     Clock.schedule_once(lambda dt: self.update_cups_display(cups_count))
-                    
+
                     if cups_count <= 0:
-                        # No cups available - navigate to machine empty page
                         print("No cups available, navigating to machine empty page")
                         Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
                         return
@@ -1161,7 +1168,7 @@ class PaymentMethodPage(Screen):
         if cups_count <= 0:
             print("Machine is empty (0 cups), navigating to machine empty page")
             Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
-    
+            
     def refresh_cups_count(self):
         """Refresh cups count display using local counter"""
         from kivy.app import App
@@ -1231,6 +1238,12 @@ class PaymentMethodPage(Screen):
     
     def restart_rfid_after_auth(self):
         """Restart RFID polling after authentication attempt"""
+        from kivy.app import App
+        app = App.get_running_app()
+        # Only restart if we're still on the payment method page
+        if app and app.screen_manager.current != 'payment_method':
+            print("🏷️ RFID restart skipped — no longer on payment_method page")
+            return
         self.rfid_listening = True
         self.start_rfid_polling()
         print("🏷️ Restarted RFID polling")
@@ -1266,14 +1279,13 @@ class PaymentMethodPage(Screen):
             else:
                 # No API client - show offline
                 Clock.schedule_once(lambda dt: self.show_offline_popup_for_rfid())
-                Clock.schedule_once(lambda dt: self.restart_rfid_after_auth(), 3)
-                
+                # restart_rfid_event (set in handle_rfid_card_detected) already handles restart
+
         except Exception as e:
             print(f"Error authenticating RFID card: {e}")
-            # On error, show error on auth page
             Clock.schedule_once(lambda dt: app.rfid_auth_page.show_error(str(e)))
-            Clock.schedule_once(lambda dt: self.restart_rfid_after_auth(), 3)
             Clock.schedule_once(lambda dt: app.show_page('payment_method'), 3)
+            # restart_rfid_event (set in handle_rfid_card_detected) already handles restart
     
     def handle_rfid_validation_result(self, validation_result):
         """Handle RFID validation result and show appropriate popup"""
@@ -1365,13 +1377,13 @@ class PaymentMethodPage(Screen):
             Clock.schedule_once(lambda dt: app.show_page('payment_method'), 3)
     
     def navigate_to_dispensing(self):
-        """Navigate directly to dispensing for RFID payment"""
+        """Navigate directly to dispensing for RFID payment.
+        The caller already waits 1.5s (to show the success message) before calling
+        this method, so we navigate immediately without an extra delay.
+        """
         from kivy.app import App
         app = App.get_running_app()
-        
-        # Show transaction processing first, then dispensing
-        app.show_transaction_processing_page()
-        Clock.schedule_once(lambda dt: app.show_dispensing_page(), 4)
+        app.show_dispensing_page()
     
     def send_maintenance_solenoid_command(self, duration_ms=10000):
         """Send solenoid control command for maintenance card"""
@@ -1383,22 +1395,24 @@ class PaymentMethodPage(Screen):
             print("🔧 SOLENOID COMMAND - MAINTENANCE MODE")
             print("="*80)
             print(f"🔧 Duration: {duration_ms}ms ({duration_ms/1000}s)")
-            print(f"🔧 Command ID: cmd_solenoid_001")
+            import uuid as _uuid
+            _cmd_id = f"cmd_solenoid_{_uuid.uuid4().hex[:12]}"
+            print(f"🔧 Command ID: {_cmd_id}")
             print(f"🔧 Device ID: {DEVICE_ID}")
-            
+
             # API endpoint (using localhost for testing)
             # TODO: Change to dynamic IP later for production
             url = "http://localhost:5000/api/device/command"
-            
+
             # Device ID from central config
             device_id = DEVICE_ID
-            
+
             # Prepare the request payload
             payload = {
                 "messageType": "command",
                 "commandType": "control",
                 "version": "1.0",
-                "commandId": "cmd_solenoid_001",
+                "commandId": _cmd_id,
                 "deviceId": device_id,
                 "command": {
                     "action": "open_solenoid",
@@ -1416,9 +1430,9 @@ class PaymentMethodPage(Screen):
             print("⏳ Sending request to polling server...")
             print("="*80)
             
-            # Send POST request with longer timeout for ESP32 response (using pooled session)
+            # 35s: enough for one ESP32 poll cycle + execution
             session = get_localhost_session()
-            response = session.post(url, json=payload, timeout=30)
+            response = session.post(url, json=payload, timeout=35)
             
             print("="*80)
             print("📥 RESPONSE RECEIVED")
@@ -1458,8 +1472,11 @@ class PaymentMethodPage(Screen):
             return False
     
     def navigate_to_machine_empty(self):
-        """Navigate to machine empty page when cups are 0"""
-        self.manager.current = 'machine_empty'
+        """Navigate to machine empty page when cups are 0 (only if on payment_method screen)"""
+        if self.manager.current == 'payment_method':
+            self.manager.current = 'machine_empty'
+        else:
+            print(f"Skipping auto-navigation to machine_empty as user has moved to: {self.manager.current}")
     
     def start_status_monitoring(self):
         """Start continuous machine status monitoring"""
@@ -1482,6 +1499,9 @@ class PaymentMethodPage(Screen):
     
     def check_machine_status_background(self):
         """Check machine status in background thread"""
+        if hasattr(self, '_checking_status') and self._checking_status:
+            return
+        self._checking_status = True
         threading.Thread(target=self._do_status_check, daemon=True).start()
     
     def _do_status_check(self):
@@ -1524,6 +1544,8 @@ class PaymentMethodPage(Screen):
                     
         except Exception as e:
             print(f"Status check error: {e}")
+        finally:
+            self._checking_status = False
     
     def show_offline_popup_for_rfid(self):
         """Show offline popup for RFID"""
@@ -1562,11 +1584,12 @@ class PaymentMethodPage(Screen):
         if not hasattr(app, 'rfid_auth_handler') or app.rfid_auth_handler is None:
             # Handler not initialized or failed at startup, try to initialize now
             print("🔐 RFID Auth Handler not initialized, attempting initialization...")
-            from utils.rfid_aes_auth import RFIDAESAuth
+            from config import MACHINE_ID, RFID_MACHINE_ID
             try:
+                from utils.rfid_aes_auth import RFIDAESAuth
                 app.rfid_auth_handler = RFIDAESAuth(
                     base_url="https://www.ukteawallet.com",
-                    machine_id="UK_0007"
+                    machine_id=RFID_MACHINE_ID
                 )
                 if app.rfid_auth_handler.reader_active:
                     print("✅ RFID Auth Handler initialized successfully")
@@ -1584,13 +1607,14 @@ class PaymentMethodPage(Screen):
     
     def on_leave(self):
         """Called when leaving the screen"""
-        # Disable RFID listening
         self.rfid_listening = False
-        
-        # Stop RFID polling
         self.stop_rfid_polling()
-        
-        # Note: Global status monitoring in main_app.py continues running
+
+        # Cancel the 3s fallback restart timer so it doesn't fire after
+        # we've already navigated away and restart RFID on the wrong page.
+        if hasattr(self, 'restart_rfid_event') and self.restart_rfid_event:
+            self.restart_rfid_event.cancel()
+            self.restart_rfid_event = None
     
     def start_rfid_polling(self):
         """Start polling for RFID cards"""
@@ -1600,13 +1624,39 @@ class PaymentMethodPage(Screen):
             self.rfid_poll_event = Clock.schedule_interval(self.poll_for_rfid_card, 0.5)
             print("🏷️ Started RFID card polling (every 0.5s)")
             print("🏷️ Place your card on the reader...")
+            
+            # Start connection keep-alive to prevent cold start issues
+            self._start_rfid_keepalive()
     
+    def _start_rfid_keepalive(self):
+        """Keep RFID HTTP connection warm to prevent first-request slowness"""
+        if not hasattr(self, 'rfid_keepalive_event') or self.rfid_keepalive_event is None:
+            # Refresh connection every 30 seconds
+            self.rfid_keepalive_event = Clock.schedule_interval(self._rfid_keepalive_tick, 30)
+            print("🔄 Started RFID connection keep-alive (every 30s)")
+    
+    def _rfid_keepalive_tick(self, dt):
+        """Periodic tick to keep RFID HTTP connection warm"""
+        from kivy.app import App
+        app = App.get_running_app()
+        if hasattr(app, 'rfid_auth_handler') and app.rfid_auth_handler:
+            threading.Thread(target=app.rfid_auth_handler.refresh_connection, daemon=True).start()
+    
+    def _stop_rfid_keepalive(self):
+        """Stop the RFID keep-alive timer"""
+        if hasattr(self, 'rfid_keepalive_event') and self.rfid_keepalive_event:
+            self.rfid_keepalive_event.cancel()
+            self.rfid_keepalive_event = None
+
     def stop_rfid_polling(self):
         """Stop polling for RFID cards"""
         if hasattr(self, 'rfid_poll_event') and self.rfid_poll_event:
             self.rfid_poll_event.cancel()
             self.rfid_poll_event = None
             print("🏷️ Stopped RFID card polling")
+        
+        # Also stop keep-alive
+        self._stop_rfid_keepalive()
     
     def poll_for_rfid_card(self, dt):
         """Poll for RFID card presence"""

@@ -124,7 +124,7 @@ def handshake():
             "statusCode": 200,
             "sessionId": session_id,
             "configuration": {
-                "servingTemperature": 83.0,
+                "servingTemperature": 80.0,
                 "maxTemperature": 95.0,
                 "pumpOperationDuration": 10000,
                 "heartbeatInterval": 30
@@ -160,15 +160,26 @@ def handshake():
 
 @app.route('/api/device/health', methods=['POST'])
 def health_check():
-    # Don't parse large JSON to prevent parsing failures - just acknowledge receipt
-    request_data = {"note": "health data received but not parsed due to size"}
+    # Safely parse the ESP32 JSON payload. Use silent=True so malformed
+    # or oversized bodies don't raise an exception and crash the server.
+    request_data = request.get_json(silent=True) or {}
     log_json('/api/device/health', 'REQUEST', request_data)
 
     device_id = request_data.get('deviceId', 'UNKNOWN')
 
-    # Update device last seen and store health data
+    # Auto-register device if not seen before (ESP32 may skip handshake)
     with lock:
-        if device_id in devices:
+        if device_id not in devices:
+            devices[device_id] = {
+                'deviceId': device_id,
+                'connected_at': datetime.now().isoformat(),
+                'last_seen': datetime.now().isoformat(),
+                'status': 'online'
+            }
+            if device_id not in command_queues:
+                command_queues[device_id] = deque()
+            print(f"📡 Auto-registered device {device_id} from health check")
+        else:
             devices[device_id]['last_seen'] = datetime.now().isoformat()
             devices[device_id]['status'] = 'online'
         if device_id not in health_history:
@@ -200,9 +211,65 @@ def get_pending_commands():
     log_json('/api/device/commands/pending', f'REQUEST (deviceId={device_id})', {'deviceId': device_id})
 
     with lock:
-        # Update last seen
-        if device_id in devices:
+        # Auto-register device on first poll if not seen before
+        if device_id not in devices:
+            devices[device_id] = {
+                'deviceId': device_id,
+                'connected_at': datetime.now().isoformat(),
+                'last_seen': datetime.now().isoformat(),
+                'status': 'online'
+            }
+            if device_id not in command_queues:
+                command_queues[device_id] = deque()
+            print(f"📡 Auto-registered device {device_id} from command poll")
+        else:
             devices[device_id]['last_seen'] = datetime.now().isoformat()
+
+        # Prune expired or superceded commands from the queue to prevent backlogs
+        if device_id in command_queues:
+            # 1. Filter out expired commands (older than 20 seconds)
+            temp_queue = []
+            for cmd in command_queues[device_id]:
+                cmd_id = cmd.get('commandId')
+                cmd_info = cmd.get('command', {}) or {}
+                cmd_action = cmd_info.get('action', '')
+                
+                is_expired = False
+                if cmd_id in command_history:
+                    queued_at_str = command_history[cmd_id].get('queued_at')
+                    if queued_at_str:
+                        try:
+                            queued_at = datetime.fromisoformat(queued_at_str)
+                            if (datetime.now() - queued_at).total_seconds() > 60.0:
+                                is_expired = True
+                        except Exception:
+                            pass
+                
+                if is_expired:
+                    command_history[cmd_id]['status'] = 'expired'
+                    print(f"🧹 Pruned expired command {cmd_id} ({cmd_action}) from queue")
+                else:
+                    temp_queue.append(cmd)
+            
+            # 2. Keep only the LATEST health check command in the queue
+            pruned_queue = deque()
+            last_health_idx = -1
+            for i, cmd in enumerate(temp_queue):
+                cmd_info = cmd.get('command', {}) or {}
+                if cmd_info.get('action') == 'health_check':
+                    last_health_idx = i
+            
+            for i, cmd in enumerate(temp_queue):
+                cmd_id = cmd.get('commandId')
+                cmd_info = cmd.get('command', {}) or {}
+                if cmd_info.get('action') == 'health_check' and i != last_health_idx:
+                    if cmd_id in command_history:
+                        command_history[cmd_id]['status'] = 'superceded'
+                    print(f"🧹 Pruned superceded health check {cmd_id} from queue")
+                else:
+                    pruned_queue.append(cmd)
+            
+            command_queues[device_id] = pruned_queue
 
         # Check if commands are pending
         if device_id in command_queues and len(command_queues[device_id]) > 0:
@@ -265,6 +332,16 @@ def command_result():
         # Update device last seen
         if device_id in devices:
             devices[device_id]['last_seen'] = datetime.now().isoformat()
+
+        # If this is a health check result, also append it to health_history
+        message_type = request_data.get('messageType')
+        if message_type == 'health_check' or 'checks' in request_data:
+            if device_id not in health_history:
+                health_history[device_id] = []
+            health_entry = { 'timestamp': datetime.now().isoformat(), 'data': request_data }
+            health_history[device_id].append(health_entry)
+            if len(health_history[device_id]) > 100:
+                health_history[device_id] = health_history[device_id][-100:]
 
     # Acknowledgment
     response_data = {
@@ -376,43 +453,54 @@ def ota_progress():
         print(f"OTA progress error: {e}")
         return jsonify({"status": "error"}), 500
 
-@app.route('/api/device/sensor/pump_status', methods=['GET'])
-def get_pump_status():
-    """Get pump status with timing logic for dispense flow"""
-    device_id = request.args.get('deviceId')
+@app.route('/api/device/sensor/pump_status', methods=['GET', 'POST'])
+def handle_pump_status():
+    """
+    GET: UI polls for current hardware status
+    POST: ESP32 reports current hardware status
+    """
+    if request.method == 'POST':
+        request_data = request.get_json()
+        device_id = request_data.get('deviceId', 'UNKNOWN')
+        status_data = request_data.get('data', {})
+        
+        with lock:
+            if device_id not in devices:
+                devices[device_id] = {}
+            devices[device_id]['pump_state_real'] = status_data
+            
+        print(f"📡 Real Hardware: Received status from {device_id}: {status_data.get('pumpState')} ({status_data.get('progress')}%)")
+        return jsonify({"status": "success"}), 200
 
-    if not device_id or device_id not in devices:
-        return jsonify({
-            "messageType": "command_response",
-            "version": "1.0",
-            "response": {
-                "status": "error",
-                "statusCode": 404,
-                "message": "Device not registered"
+    else:
+        device_id = request.args.get('deviceId')
+
+        with lock:
+            if not device_id or device_id not in devices:
+                return jsonify({
+                    "messageType": "command_response",
+                    "version": "1.0",
+                    "response": {
+                        "status": "error",
+                        "statusCode": 404,
+                        "message": "Device not registered"
+                    }
+                }), 404
+
+            status_data = devices[device_id].get('pump_state_real', {
+                "component": "pump_01", "pumpState": "idle", "operation": "idle",
+                "elapsedTime": 0, "remainingTime": 0, "progress": 0.0
+            })
+
+            response_data = {
+                "messageType": "command_response",
+                "version": "1.0",
+                "deviceId": device_id,
+                "response": {
+                    "statusCode": 200, "status": "success", "data": status_data
+                }
             }
-        }), 404
-
-    # Mock pump status response (in real implementation, this would come from ESP32)
-    response_data = {
-        "messageType": "command_response",
-        "version": "1.0",
-        "deviceId": device_id,
-        "response": {
-            "statusCode": 200,
-            "status": "success",
-            "data": {
-                "component": "pump_01",
-                "pumpState": "idle",
-                "operation": "idle",
-                "elapsedTime": 0,
-                "remainingTime": 0,
-                "progress": 0.0
-            }
-        }
-    }
-
-    log_json('/api/device/sensor/pump_status', f'RESPONSE (deviceId={device_id})', response_data)
-    return jsonify(response_data), 200
+        return jsonify(response_data), 200
 
 @app.route('/firmware/<device_id>/<version>.bin', methods=['GET'])
 def download_firmware(device_id, version):
@@ -440,14 +528,68 @@ def send_command():
     Returns the actual ESP32 command execution result directly
     """
     request_data = request.get_json()
+    
+    # Handle the 'commands' list wrapper if present
+    if 'commands' in request_data and isinstance(request_data['commands'], list) and len(request_data['commands']) > 0:
+        request_data = request_data['commands'][0]
+        print("📦 Mock: Unwrapped command from 'commands' list")
+
     log_json('/api/send_command', 'REQUEST (Will wait for ESP result)', request_data)
 
     device_id = request_data.get('deviceId', 'UNKNOWN')
     command_id = request_data.get('commandId', f"cmd_{uuid.uuid4().hex[:8]}")
+    command_type = request_data.get('commandType', 'control')
+    command_info = request_data.get('command', {})
+    action = command_info.get('action', '')
 
     # Ensure command has required fields
     if 'commandId' not in request_data:
         request_data['commandId'] = command_id
+
+    # Reference logic simulation: Update mock state based on command
+    with lock:
+        if device_id in devices:
+            if command_type == 'update_settings' and action == 'update_pump_settings':
+                duration = command_info.get('parameters', {}).get('pumpOperationDuration', 10000)
+                devices[device_id]['pump_state'] = {
+                    "component": "pump_01",
+                    "pumpState": "ongoing",
+                    "operation": "dispensing",
+                    "duration": duration,
+                    "start_time": time.time()
+                }
+                print(f"⚙️ Mock: Updated pump settings for {device_id} (Duration: {duration}ms)")
+            elif action == 'start_dispense':
+                # Tea dispense — read the actual duration from the command parameters
+                params = command_info.get('parameters', {})
+                duration = params.get('pumpOperationDuration', 11111)
+                pump_state_data = {
+                    "component": "pump_01",
+                    "pumpState": "Ongoing",
+                    "operation": "dispensing",
+                    "elapsedTime": 0,
+                    "remainingTime": duration,
+                    "progress": 0.0,
+                    "duration": duration,
+                    "start_time": time.time()
+                }
+                devices[device_id]['pump_state_real'] = pump_state_data
+                print(f"☕ Mock: Dispense started for {device_id} (duration={duration}ms)")
+
+            elif action in ['water_dispense', 'tea_dispense']:
+                # Flush actions (water/tea maintenance flush)
+                params = command_info.get('parameters', {})
+                duration = params.get('duration', 20000)
+
+                devices[device_id]['pump_state'] = {
+                    "component": "pump_01",
+                    "pumpState": "ongoing",
+                    "operation": "dispensing",
+                    "duration": duration,
+                    "start_time": time.time()
+                }
+                action_label = 'WATER FLUSH' if action == 'water_dispense' else 'TEA FLUSH'
+                print(f"☕ {action_label} queued for {device_id} — ESP32 will run for {duration}ms)")
 
     # Check if commandId already exists and increment if necessary
     with lock:
@@ -488,7 +630,7 @@ def send_command():
         command_history[command_id]['status'] = 'queued'
 
     # Wait for ESP32 to process the command and return result
-    timeout_seconds = 30.0  # Max wait time
+    timeout_seconds = 60.0  # Max wait time
     poll_interval = 0.5     # Check every 500ms
     start_time = time.time()
 
@@ -524,6 +666,47 @@ def list_devices():
         "devices": devices_list,
         "count": len(devices_list)
     }), 200
+
+@app.route('/api/device/<device_id>/temperature', methods=['GET'])
+def get_cached_temperature(device_id):
+    """Return the last PT100 temperature from the most recent health POST.
+    Instant — no command round-trip needed. Returns 404 if no health data yet.
+    """
+    with lock:
+        history = health_history.get(device_id, [])
+
+    if not history:
+        return jsonify({"error": "No health data yet"}), 404
+
+    last_health = history[-1].get('data', {})
+
+    # Health data may be nested under 'data' key (ESP32 wraps payload)
+    payload = last_health.get('data', last_health)
+    checks = payload.get('checks', {})
+    machine_state = payload.get('machineState', 'UNKNOWN')
+    timestamp = history[-1].get('timestamp')
+
+    pt100_temp = None
+    for key, val_list in checks.items():
+        if 'pt100' in key and val_list:
+            pt100_temp = val_list[0].get('observedValue')
+            break
+
+    ktype_temp = None
+    for key, val_list in checks.items():
+        if 'ktype' in key and val_list:
+            ktype_temp = val_list[0].get('observedValue')
+            break
+
+    return jsonify({
+        "deviceId": device_id,
+        "pt100_temperature": pt100_temp,
+        "ktype_temperature": ktype_temp,
+        "machineState": machine_state,
+        "timestamp": timestamp,
+        "source": "cached_health"
+    }), 200
+
 
 @app.route('/api/device/<device_id>/history', methods=['GET'])
 def device_history(device_id):
@@ -634,4 +817,12 @@ if __name__ == '__main__':
     pruning_thread.start()
     print("🧹 Command history pruning enabled (max 1000 entries, 24-hour TTL)")
 
-    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
+    # use_reloader=False prevents the double-startup issue in threaded mode.
+    # The default Werkzeug dev server sends Connection:close on every response,
+    # which causes urllib3 to log "[Resetting dropped connection]" on every
+    # health-check POST.  Overriding the protocol version to HTTP/1.1 enables
+    # persistent keep-alive connections and eliminates that noise.
+    from werkzeug.serving import WSGIRequestHandler
+    WSGIRequestHandler.protocol_version = "HTTP/1.1"
+
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True, use_reloader=False)

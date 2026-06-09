@@ -264,8 +264,9 @@ class ScreensaverVideoManager:
 
 # Usage example:
 if __name__ == "__main__":
+    from config import MACHINE_ID
     # Test the video manager
-    manager = ScreensaverVideoManager(machine_id="KH-01")
+    manager = ScreensaverVideoManager(machine_id=MACHINE_ID)
     
     def on_video_ready(video_path):
         print(f"\n🎉 Video ready: {video_path}")

@@ -1,6 +1,8 @@
 import requests
 import json
 import time
+import uuid
+from config import MACHINE_ID
 
 # Shared session for localhost API calls (polling server)
 # This enables connection pooling for all local API requests
@@ -32,7 +34,8 @@ class ApiClient:
         self.REDUCE_CUPS_API_URL = "https://kulhad.vercel.app/api/reduce-cups"
         self.RFID_VALIDATE_API_URL = "https://tea-wallet-prasadthirtha.replit.app/api/rfid/validate"
         self.CANISTER_CHECK_API_URL = "https://kulhad.vercel.app/api/canister-check"
-        
+        from config import POLLING_SERVER_URL
+        self.HARDWARE_COMMAND_URL = f"{POLLING_SERVER_URL}/api/device/command"
         # Use persistent session for connection pooling
         self.session = requests.Session()
         # Configure connection pooling
@@ -54,7 +57,7 @@ class ApiClient:
                 
                 # Warm up kulhad.vercel.app (where QR APIs are hosted)
                 warmup_urls = [
-                    "https://kulhad.vercel.app/api/MachinesStatus?machineId=KH-01",
+                    f"https://kulhad.vercel.app/api/MachinesStatus?machineId={MACHINE_ID}",
                     "https://www.ukteawallet.com",
                 ]
                 
@@ -65,7 +68,18 @@ class ApiClient:
                         print(f"✓ Warmed up: {url.split('/')[2]}")
                     except Exception as e:
                         print(f"⚠ Warmup failed for {url}: {e}")
-                
+
+                # ── OPT 3: Warm up the payment endpoint so the serverless
+                # container stays hot for the real POST request.
+                try:
+                    self.session.head(
+                        "https://kulhad.vercel.app/api/direct-payment",
+                        timeout=3
+                    )
+                    print("✓ Warmed up: direct-payment endpoint")
+                except Exception:
+                    pass  # Ignore – warmup is best-effort
+
                 print("✅ API warmup complete!")
                 
             except Exception as e:
@@ -76,16 +90,40 @@ class ApiClient:
     
     def generate_payment_qr(self, machine_id, number_of_cups):
         """Generate a payment QR code"""
+        import time
+        start_time = time.time()
         try:
             payload = {
                 "machineId": machine_id,
                 "numberOfCups": number_of_cups
             }
             
-            response = self.session.post(self.PAYMENT_API_URL, json=payload)
-            return response.json() if response.status_code == 200 else None
+            print(f"🔄 Requesting QR code for {number_of_cups} cups...")
+            
+            # ── OPT 4: Tightened timeout from 10s → 6s.
+            # Razorpay API consistently responds in 2-3s; 6s gives headroom
+            # while failing faster on genuine errors.
+            response = self.session.post(self.PAYMENT_API_URL, json=payload, timeout=6)
+            elapsed = time.time() - start_time
+            
+            if response.status_code == 200:
+                result = response.json()
+                has_image_content = 'imageContent' in result and result['imageContent']
+                print(f"✅ QR API responded in {elapsed:.2f}s (hasImageContent: {has_image_content})")
+                if not has_image_content:
+                    print(f"⚠️ QR API response missing imageContent: {list(result.keys())}")
+                return result
+            else:
+                print(f"❌ QR API failed: {response.status_code} in {elapsed:.2f}s")
+                print(f"Response: {response.text[:200]}")
+                return None
+        except requests.exceptions.Timeout:
+            elapsed = time.time() - start_time
+            print(f"⏱️ Timeout generating payment QR ({elapsed:.2f}s exceeded)")
+            return None
         except Exception as e:
-            print(f"Error generating payment QR: {e}")
+            elapsed = time.time() - start_time
+            print(f"❌ Error generating payment QR in {elapsed:.2f}s: {e}")
             return None
     
     def check_payment_status(self, qr_code_id):
@@ -99,7 +137,8 @@ class ApiClient:
             response = self.session.post(
                 self.STATUS_API_URL,
                 data=json.dumps(payload),
-                headers=headers
+                headers=headers,
+                timeout=10
             )
             
             if response.status_code == 200:
@@ -146,7 +185,8 @@ class ApiClient:
             
             print(f"Checking machine {machine_id} status...")
             
-            response = self.session.get(url)
+            # Add timeout to prevent hanging - machine status should be fast
+            response = self.session.get(url, timeout=5)
             
             if response.status_code == 200:
                 result = response.json()
@@ -156,35 +196,40 @@ class ApiClient:
                 print(f"Failed to check machine status: {response.status_code}")
                 print(f"Error: {response.text}")
                 return None
+        except requests.exceptions.Timeout:
+            print(f"Timeout checking machine status (5s exceeded)")
+            # Return success=True to allow QR generation to proceed
+            # (better to show QR than fail due to status check timeout)
+            return {"success": True, "data": {"status": "online"}}
         except Exception as e:
             print(f"Error checking machine status: {e}")
             return None
     
     def get_remaining_cups(self, machine_id):
-        """Get remaining cups count for the machine"""
+        """Get remaining cups count for the machine (READ-ONLY).
+
+        /api/remaining-cups does not exist on the Kulhad backend (always 404).
+        The only working endpoint is /api/reduce-cups with cupsToReduce=0,
+        which returns the current count without modifying it.
+        """
         try:
-            payload = {"machineId": machine_id}
-            headers = {"Content-Type": "application/json"}
-            
             print(f"Getting remaining cups for machine {machine_id}...")
-            
+            payload = {"machineId": machine_id, "cupsToReduce": 0}
             response = self.session.post(
                 self.REDUCE_CUPS_API_URL,
-                data=json.dumps(payload),
-                headers=headers
+                json=payload,
+                timeout=5
             )
-            
             if response.status_code == 200:
                 result = response.json()
-                print(f"Remaining cups result: {result}")
+                print(f"Remaining cups: {result.get('cups')} (machine: {machine_id})")
                 return result
-            else:
-                print(f"Failed to get remaining cups: {response.status_code}")
-                print(f"Error: {response.text}")
-                return None
+            print(f"Failed to get remaining cups: {response.status_code}")
+            return None
         except Exception as e:
             print(f"Error getting remaining cups: {e}")
             return None
+
     
     def reduce_cups(self, machine_id, number_of_cups):
         """Reduce cups count when payment is successful"""
@@ -193,14 +238,13 @@ class ApiClient:
                 "machineId": machine_id,
                 "numberOfCups": number_of_cups
             }
-            headers = {"Content-Type": "application/json"}
-            
+
             print(f"Reducing {number_of_cups} cups for machine {machine_id}...")
-            
+
             response = self.session.post(
                 self.REDUCE_CUPS_API_URL,
-                data=json.dumps(payload),
-                headers=headers
+                json=payload,
+                timeout=5
             )
             
             if response.status_code == 200:
@@ -275,5 +319,177 @@ class ApiClient:
                 return None
         except Exception as e:
             print(f"❌ Error sending canister alert: {e}")
+            return None
+
+    def send_hardware_command(self, device_id, action, parameters=None):
+        """Send a command to the hardware via the polling server"""
+        try:
+            # Strip internal flags before sending to ESP32
+            is_flush = action in ['water_dispense', 'tea_dispense']
+            clean_params = {k: v for k, v in parameters.items() if k != 'wrapped'} if parameters else {"jobId": str(uuid.uuid4())}
+
+            if action == 'water_dispense':
+                command_id = f"Wa_dispense_{uuid.uuid4().hex[:12]}"
+            elif action == 'tea_dispense':
+                command_id = f"Tea_dispense_{uuid.uuid4().hex[:12]}"
+            else:
+                command_id = f"cmd_flush_{uuid.uuid4().hex[:12]}"
+
+            inner = {
+                "messageType": "command",
+                "commandType": "control",
+                "version": "1.0",
+                "commandId": command_id,
+                "deviceId": device_id,
+                "command": {
+                    "action": action,
+                    "parameters": clean_params
+                }
+            }
+            # Flush commands must be wrapped in {"commands": [...]} per ESP32 spec
+            payload = {"commands": [inner]} if is_flush else inner
+
+            headers = {"Content-Type": "application/json"}
+            print(f"📡 Sending hardware command: {action} (ID: {command_id})")
+
+            session = get_localhost_session()
+
+            # Flush commands are fire-and-forget: the polling server queues the
+            # command immediately, then blocks up to 30 s waiting for the ESP32
+            # to POST back a completion result.  Since a flush takes 20 s and
+            # the ESP32 poll cycle can be up to 30 s, the server almost always
+            # returns HTTP 504 before the ESP32 finishes.  We use a 10-second
+            # client timeout — enough for the command to be queued — then accept
+            # the timeout/504 as proof that the command is dispatched.
+            # Wait up to 35 seconds for the ESP32 to execute the command and return a result
+            client_timeout = 35
+
+            try:
+                response = session.post(
+                    self.HARDWARE_COMMAND_URL,
+                    data=json.dumps(payload),
+                    headers=headers,
+                    timeout=client_timeout
+                )
+            except requests.exceptions.Timeout:
+                print(f"❌ Timeout waiting for ESP32 response to {action}")
+                raise
+
+            if response.status_code == 200:
+                result = response.json()
+                pump_state = result.get('response', {}).get('data', {}).get('pumpState')
+                if pump_state:
+                    print(f"💧 Pump state: {pump_state}")
+                return result
+            elif is_flush and response.status_code == 504:
+                # Server timed out waiting for ESP32 completion result.
+                # The command WAS queued and dispatched to ESP32; it is executing now.
+                print(f"ℹ️ {action} command dispatched to ESP32 (server wait timed out — normal for long flushes)")
+                return {"dispatched": True, "action": action}
+            return None
+        except Exception as e:
+            print(f"❌ Error sending hardware command: {e}")
+            return None
+
+    def water_flush(self, device_id):
+        """Trigger a water flush maintenance action"""
+        return self.send_hardware_command(device_id, "water_dispense", {"jobId": str(uuid.uuid4())})
+
+    def tea_flush(self, device_id):
+        """Trigger a tea flush maintenance action"""
+        return self.send_hardware_command(device_id, "tea_dispense", {"jobId": str(uuid.uuid4())})
+
+    def get_machine_data(self, machine_id):
+        """Fetch machine config (flushTimeMinutes, price, mlToDispense) from the backend"""
+        try:
+            url = f"https://kulhad.vercel.app/api/getMachineData?machineId={machine_id}"
+            response = self.session.get(url, timeout=5)
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except Exception as e:
+            print(f"❌ Error fetching machine data: {e}")
+            return None
+
+    def get_flush_schedule(self, machine_id):
+        """Fetch flush schedule from Kulhad backend.
+        Tries the dedicated /api/getFlushSchedule endpoint first.
+        Falls back to /api/getMachineData if the endpoint doesn't exist yet.
+        Expected response fields (all optional):
+          data.flushTimeMinutes       — idle minutes after last dispense before auto-flush
+          data.flushIntervalHours     — periodic flush every N hours (0 = disabled)
+          data.scheduledFlushTimes    — list of HH:MM strings e.g. ["06:00", "18:00"]
+          data.waterFlushDurationSecs — seconds the water pump runs (default 20)
+          data.teaFlushDurationSecs   — seconds the tea pump runs (default 20)
+        """
+        try:
+            url = f"https://kulhad.vercel.app/api/getFlushSchedule?machineId={machine_id}"
+            response = self.session.get(url, timeout=5)
+            if response.status_code == 200:
+                print(f"✅ Flush schedule fetched from /api/getFlushSchedule")
+                return response.json()
+            # Dedicated endpoint not available — fall back to getMachineData
+            print(f"⚠️ /api/getFlushSchedule not found (HTTP {response.status_code}), falling back to getMachineData")
+            return self.get_machine_data(machine_id)
+        except Exception as e:
+            print(f"❌ Error fetching flush schedule: {e}")
+            try:
+                return self.get_machine_data(machine_id)
+            except Exception:
+                return None
+
+
+
+    def get_pump_status(self, device_id):
+        """Poll the current status of the pump from the bridge server"""
+        try:
+            from config import POLLING_SERVER_URL
+            url = f"{POLLING_SERVER_URL}/api/device/sensor/pump_status?deviceId={device_id}"
+            
+            session = get_localhost_session()
+            response = session.get(url, timeout=2)
+            
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except Exception as e:
+            # Silent fail for polling
+            return None
+
+    def update_pump_settings(self, device_id, duration):
+        """Update pump operation duration settings"""
+        try:
+            command_id = f"cmd_settings_{uuid.uuid4().hex[:12]}"
+            payload = {
+                "messageType": "command",
+                "commandType": "update_settings",
+                "version": "1.0",
+                "commandId": command_id,
+                "deviceId": device_id,
+                "command": {
+                    "action": "update_pump_settings",
+                    "parameters": {
+                        "component": "pump_01",
+                        "pumpOperationDuration": duration
+                    }
+                }
+            }
+            headers = {"Content-Type": "application/json"}
+            
+            print(f"📡 Sending update settings: {duration}ms (ID: {command_id})")
+            
+            session = get_localhost_session()
+            response = session.post(
+                self.HARDWARE_COMMAND_URL,
+                data=json.dumps(payload),
+                headers=headers,
+                timeout=35
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except Exception as e:
+            print(f"❌ Error updating pump settings: {e}")
             return None
 

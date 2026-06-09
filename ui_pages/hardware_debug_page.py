@@ -7,6 +7,7 @@ from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.button import Button
+from kivy.uix.textinput import TextInput
 from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle
 from utils.hardware_monitor import hardware_monitor
@@ -81,17 +82,6 @@ class HardwareDebugPage(Screen):
         self.temp_label.bind(size=self.temp_label.setter('text_size'))
         self.status_layout.add_widget(self.temp_label)
         
-        # Cup Sensor
-        self.cup_label = Label(
-            text='Cup Sensor: --',
-            font_size='20sp',
-            color=(1, 1, 1, 1),
-            halign='left',
-            valign='top'
-        )
-        self.cup_label.bind(size=self.cup_label.setter('text_size'))
-        self.status_layout.add_widget(self.cup_label)
-        
         # Cups Remaining
         self.cups_remaining_label = Label(
             text='Cups Remaining: --',
@@ -125,9 +115,72 @@ class HardwareDebugPage(Screen):
         self.last_update_label.bind(size=self.last_update_label.setter('text_size'))
         self.status_layout.add_widget(self.last_update_label)
         
+        # --- Pump Status Monitor ---
+        self.pump_status_label = Label(
+            text='Pump Status: Idle',
+            font_size='22sp',
+            color=(0.5, 0.8, 1, 1),
+            halign='left',
+            valign='top',
+            bold=True
+        )
+        self.pump_status_label.bind(size=self.pump_status_label.setter('text_size'))
+        self.status_layout.add_widget(self.pump_status_label)
+        
         main_layout.add_widget(self.status_layout)
         
-        # Buttons
+        # Flush Commands
+        flush_layout = BoxLayout(orientation='horizontal', spacing=20, size_hint=(1, 0.12))
+        
+        # Water Flush button
+        self.water_flush_btn = Button(
+            text='WATER FLUSH',
+            font_size='20sp',
+            background_color=(0, 0.7, 0.8, 1),
+            size_hint=(0.4, 1)
+        )
+        self.water_flush_btn.bind(on_press=self.trigger_water_flush)
+        flush_layout.add_widget(self.water_flush_btn)
+        
+        # Tea Flush button
+        self.tea_flush_btn = Button(
+            text='TEA FLUSH',
+            font_size='20sp',
+            background_color=(0.8, 0.4, 0, 1),
+            size_hint=(0.4, 1)
+        )
+        self.tea_flush_btn.bind(on_press=self.trigger_tea_flush)
+        flush_layout.add_widget(self.tea_flush_btn)
+        
+        main_layout.add_widget(flush_layout)
+        
+        # --- Pump Settings ---
+        settings_layout = BoxLayout(orientation='horizontal', spacing=20, size_hint=(1, 0.12))
+        
+        settings_label = Label(text='Duration (ms):', size_hint_x=0.3)
+        settings_layout.add_widget(settings_label)
+        
+        self.duration_input = TextInput(
+            text='10000',
+            multiline=False,
+            font_size='20sp',
+            size_hint_x=0.3,
+            input_filter='int'
+        )
+        settings_layout.add_widget(self.duration_input)
+        
+        self.update_settings_btn = Button(
+            text='UPDATE PUMP',
+            font_size='20sp',
+            background_color=(0.2, 0.8, 0.2, 1),
+            size_hint_x=0.4
+        )
+        self.update_settings_btn.bind(on_press=self.trigger_update_settings)
+        settings_layout.add_widget(self.update_settings_btn)
+        
+        main_layout.add_widget(settings_layout)
+        
+        # Bottom Buttons
         button_layout = BoxLayout(orientation='horizontal', spacing=20, size_hint=(1, 0.12))
         
         # Refresh button
@@ -242,12 +295,6 @@ class HardwareDebugPage(Screen):
                 self.temp_label.text = f'Temperature: {temp}°C {"✓" if temp >= 82 else "⚠️ Heating..."}'
                 self.temp_label.color = temp_color
             
-            # Cup sensor
-            cup_present = health_data.get('cup_present')
-            if cup_present is not None:
-                self.cup_label.text = f'Cup Sensor: {"✓ Cup Present" if cup_present else "○ No Cup"}'
-                self.cup_label.color = (0, 1, 0, 1) if cup_present else (0.7, 0.7, 0.7, 1)
-            
             # Cups remaining
             cups = health_data.get('cups_remaining')
             if cups is not None:
@@ -267,6 +314,47 @@ class HardwareDebugPage(Screen):
         
         # Last update time
         self.last_update_label.text = f'Last Update: {datetime.now().strftime("%H:%M:%S")}'
+        
+        # --- New: Poll Pump Status ---
+        self.refresh_pump_status()
+    
+    def refresh_pump_status(self):
+        """Poll the bridge server for pump status"""
+        from kivy.app import App
+        app = App.get_running_app()
+        device_id = hardware_monitor.device_id
+        
+        if not device_id:
+            return
+            
+        def update_pump_ui():
+            try:
+                status_data = app.api_client.get_pump_status(device_id)
+                if status_data:
+                    resp = status_data.get('response', {})
+                    data = resp.get('data', {})
+                    
+                    state = data.get('pumpState', 'Idle').capitalize()
+                    op = data.get('operation', 'None').capitalize()
+                    prog = data.get('progress', 0.0)
+                    rem = data.get('remainingTime', 0)
+                    
+                    self.pump_status_label.text = (
+                        f"Pump Status: {state} | Op: {op}\n"
+                        f"Progress: {prog}% | Rem: {rem}ms"
+                    )
+                    
+                    # Highlight color if active
+                    if state.lower() != 'idle':
+                        self.pump_status_label.color = (1, 1, 0, 1) # Yellow
+                    else:
+                        self.pump_status_label.color = (0.5, 0.8, 1, 1) # Blueish
+            except:
+                pass
+                
+        # Run polling in separate thread to avoid UI lag
+        import threading
+        threading.Thread(target=update_pump_ui, daemon=True).start()
     
     def get_health_data(self):
         """Get health data from hardware"""
@@ -292,13 +380,6 @@ class HardwareDebugPage(Screen):
                 pt100_data = checks.get('sensor:pt100_sensor_01', [{}])[0]
                 temp = pt100_data.get('observedValue')
                 
-                # Extract cup sensor
-                cup_data = checks.get('sensor:cup_sensor_01', [{}])
-                if isinstance(cup_data, list) and len(cup_data) > 0:
-                    cup_data = cup_data[0]
-                cup_value = cup_data.get('observedValue', 'no_cup')
-                cup_present = cup_value in ['cup_present', 'cup', 'present', 'yes', 'true', '1']
-                
                 # Extract cups remaining
                 ultrasonic_data = checks.get('sensor:ultrasonic_sensor_01', [{}])[0]
                 cups_remaining = ultrasonic_data.get('observedValue')
@@ -308,7 +389,6 @@ class HardwareDebugPage(Screen):
                 
                 return {
                     'temp': temp,
-                    'cup_present': cup_present,
                     'cups_remaining': cups_remaining,
                     'machine_state': machine_state
                 }
@@ -322,6 +402,95 @@ class HardwareDebugPage(Screen):
         print("🔄 Manual refresh triggered")
         self.update_status()
     
+    def trigger_water_flush(self, instance):
+        """Trigger water flush command"""
+        self._trigger_flush("water_dispense")
+        
+    def trigger_tea_flush(self, instance):
+        """Trigger tea flush command"""
+        self._trigger_flush("tea_dispense")
+        
+    def _trigger_flush(self, action):
+        """Internal helper to send flush commands in background"""
+        from kivy.app import App
+        import threading
+        
+        app = App.get_running_app()
+        device_id = hardware_monitor.device_id
+        
+        if not device_id:
+            print("❌ Cannot flush: No device ID detected")
+            return
+            
+        print(f"🚿 Triggering {action}...")
+        
+        # Disable buttons during flush
+        self.water_flush_btn.disabled = True
+        self.tea_flush_btn.disabled = True
+        
+        def run_flush():
+            try:
+                if action == "water_dispense":
+                    result = app.api_client.water_flush(device_id)
+                else:
+                    result = app.api_client.tea_flush(device_id)
+                
+                # Update UI on main thread
+                def on_finish(dt):
+                    self.water_flush_btn.disabled = False
+                    self.tea_flush_btn.disabled = False
+                    if result:
+                        print(f"✅ Flush {action} completed successfully")
+                    else:
+                        print(f"❌ Flush {action} failed")
+                
+                Clock.schedule_once(on_finish)
+                
+            except Exception as e:
+                print(f"❌ Error during flush: {e}")
+                Clock.schedule_once(lambda dt: self._reset_buttons())
+        
+        threading.Thread(target=run_flush, daemon=True).start()
+
+    def _reset_buttons(self):
+        self.water_flush_btn.disabled = False
+        self.tea_flush_btn.disabled = False
+        self.update_settings_btn.disabled = False
+
+    def trigger_update_settings(self, instance):
+        """Send update_settings command to hardware"""
+        from kivy.app import App
+        import threading
+        
+        app = App.get_running_app()
+        device_id = hardware_monitor.device_id
+        duration = self.duration_input.text
+        
+        if not device_id:
+            print("❌ Cannot update: No device ID detected")
+            return
+            
+        print(f"⚙️ Sending pump duration update: {duration}ms")
+        self.update_settings_btn.disabled = True
+        
+        def run_update():
+            try:
+                result = app.api_client.update_pump_settings(device_id, duration)
+                
+                def on_finish(dt):
+                    self.update_settings_btn.disabled = False
+                    if result:
+                        print(f"✅ Pump settings updated successfully")
+                    else:
+                        print(f"❌ Pump settings update failed")
+                
+                Clock.schedule_once(on_finish)
+            except Exception as e:
+                print(f"❌ Error updating settings: {e}")
+                Clock.schedule_once(lambda dt: self._reset_buttons())
+                
+        threading.Thread(target=run_update, daemon=True).start()
+
     def go_back(self, instance):
         """Go back to payment method page"""
         print("⬅️ Returning to payment method page")

@@ -37,8 +37,8 @@ class ThankYouPage(Screen):
     def __init__(self, **kwargs):
         super(ThankYouPage, self).__init__(**kwargs)
         
-        # Main layout - optimized for 7-inch tablet
-        main_layout = BoxLayout(orientation='vertical', padding=[30, 20], spacing=15)
+        # Main layout - no padding to match payment_method_page exactly
+        main_layout = BoxLayout(orientation='vertical')
         
         # Background
         with main_layout.canvas.before:
@@ -46,54 +46,50 @@ class ThankYouPage(Screen):
             self.rect = RoundedRectangle(size=Window.size, pos=(0, 0))
         main_layout.bind(size=self._update_rect)
         
-        # Top section with logo on left - reduced size
-        top_section = BoxLayout(orientation='vertical', size_hint_y=0.13, padding=[10, 5])
+        # Top bar with logo on left - matching payment_method_page exactly
+        top_bar = FloatLayout(size_hint_y=0.15)
         
-        # Logo on the left - smaller
-        logo_float = FloatLayout(size_hint_y=0.6)
+        # Urban Kettle logo on the left side - same as payment_method_page
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
-        
         if os.path.exists(logo_path):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(200, 170),
-                pos_hint={'x': -0.05, 'top': 1.15},
+                size=(260, 230),
+                pos_hint={'x': 0.0, 'top': 1.35},
                 allow_stretch=True,
                 keep_ratio=True
             )
-            logo_float.add_widget(logo_image)
+            top_bar.add_widget(logo_image)
         else:
             fallback_logo = Label(
                 text='Urban Ketl',
                 font_size='28sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
+                pos_hint={'x': 0.02, 'top': 0.95},
                 halign='left'
             )
-            logo_float.add_widget(fallback_logo)
+            top_bar.add_widget(fallback_logo)
         
-        top_section.add_widget(logo_float)
+        main_layout.add_widget(top_bar)
         
-        # "ENJOY YOUR CHAI!" text - reduced size and moved up
+        # "ENJOY YOUR CHAI!" text
         enjoy_label = Label(
             text='ENJOY YOUR CHAI!',
             font_size='32sp',
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.4
+            size_hint_y=0.08
         )
-        top_section.add_widget(enjoy_label)
-        
-        main_layout.add_widget(top_section)
+        main_layout.add_widget(enjoy_label)
         
         # Spacing after ENJOY text
         main_layout.add_widget(Widget(size_hint_y=0.02))
         
         # Thank you image section
         image_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.40)
-        
         thankyou_image = Image(
             source=os.path.join('assets', 'thankyou.png'),
             size_hint=(None, None),
@@ -101,7 +97,6 @@ class ThankYouPage(Screen):
             allow_stretch=True,
             keep_ratio=True
         )
-        
         image_section.add_widget(thankyou_image)
         main_layout.add_widget(image_section)
         
@@ -172,17 +167,10 @@ class ThankYouPage(Screen):
         app.show_payment_method_page()
     
     def on_enter(self):
-        """Start auto-return timer and video when page enters"""
-        # No video to start - using static image
-        
-        # Auto-return to payment method after 5 seconds
         print("⏱️ Thank you page: Starting 5-second auto-return timer")
         self.auto_return_event = Clock.schedule_once(lambda dt: self.on_new_order(), 5)
-    
+
     def on_leave(self):
-        """Clean up when leaving page"""
-        # No video to stop - using static image
-        
         if self.auto_return_event:
             self.auto_return_event.cancel()
             self.auto_return_event = None

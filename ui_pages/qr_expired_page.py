@@ -135,6 +135,9 @@ class QRExpiredPage(Screen):
     def __init__(self, **kwargs):
         super(QRExpiredPage, self).__init__(**kwargs)
         
+        # Auto-navigation timer
+        self.auto_nav_event = None
+        
         # Main layout with premium background
         main_layout = BoxLayout(orientation='vertical')
         with main_layout.canvas.before:
@@ -199,12 +202,12 @@ class QRExpiredPage(Screen):
         button_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.12)
         
         self.home_btn = ModernPremiumButton(
-            text='🏠 Home Page',
+            text='Home Page',
             size_hint=(None, None),
             size=(300, 65),
             font_size='20sp',
             bold=True,
-            bg_color=(0.2, 0.6, 0.9, 1),  # Premium blue
+            bg_color=(0.949, 0.6, 0.0, 1),  # Orange to match confirm button
             text_color=(1, 1, 1, 1)
         )
         self.home_btn.bind(on_press=self.go_to_home)
@@ -227,6 +230,8 @@ class QRExpiredPage(Screen):
     
     def on_enter(self, *args):
         """Called when entering the screen - add entrance animation"""
+        from kivy.clock import Clock
+        
         # Animate the main content sliding up from bottom
         for child in self.children[0].children:
             if hasattr(child, 'children') and child.children:
@@ -241,9 +246,25 @@ class QRExpiredPage(Screen):
                 Animation.cancel_all(widget)
                 anim = Animation(y=original_y, opacity=1, duration=0.6, t='out_quart')
                 anim.start(widget)
+        
+        # Auto-navigate to selection page after 3 seconds
+        if self.auto_nav_event:
+            self.auto_nav_event.cancel()
+        self.auto_nav_event = Clock.schedule_once(lambda dt: self.go_to_home(None), 3)
+    
+    def on_leave(self, *args):
+        """Called when leaving the screen - cleanup"""
+        # Cancel auto-navigation timer if it exists
+        if self.auto_nav_event:
+            self.auto_nav_event.cancel()
+            self.auto_nav_event = None
+        return super().on_leave(*args)
     
     def go_to_home(self, instance):
-        """Navigate back to selection page (home)"""
+        """Navigate back to home after QR expiry"""
+        if self.auto_nav_event:
+            self.auto_nav_event.cancel()
+            self.auto_nav_event = None
+
         app = App.get_running_app()
-        # Navigate to selection page which acts as home
-        app.show_selection_page()
+        app.show_payment_method_page()

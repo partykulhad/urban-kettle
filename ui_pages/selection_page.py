@@ -208,58 +208,57 @@ class SelectionPage(Screen):
         self.inactivity_timeout = 10  # 10 seconds
         self.inactivity_timer = None
         
-        # Main layout - optimized for 7-inch tablet
-        main_layout = BoxLayout(orientation='vertical', padding=[30, 20], spacing=10)
+        # Debounce timer — fires prefetch 0.2s after user stops tapping
+        self.prefetch_timer = None
+
+        # Main layout - no padding to match payment_method_page exactly
+        main_layout = BoxLayout(orientation='vertical')
         with main_layout.canvas.before:
             Color(1, 1, 1, 1)  # White background
             self.rect = RoundedRectangle(size=Window.size, pos=self.pos)
         main_layout.bind(size=self._update_rect, pos=self._update_rect)
 
-        # Back button section
-        back_section = BoxLayout(orientation='horizontal', size_hint_y=0.07)
+        # Top bar with logo on left (like payment_method_page) and back button
+        from kivy.uix.floatlayout import FloatLayout
+        top_bar = FloatLayout(size_hint_y=0.15)
         
-        # Back button
-        back_btn = SimpleButton(
-            text='Back',
-            size_hint=(None, None),
-            size=(100, 40),
-            font_size='18sp',
-            color=(1, 1, 1, 1),
-            bg_color=(0.6, 0.6, 0.6, 1)  # Gray color
-        )
-        back_btn.bind(on_press=self.on_back_pressed)
-        back_section.add_widget(back_btn)
-        
-        # Spacer to push back button to the left
-        back_section.add_widget(Widget())
-        
-        main_layout.add_widget(back_section)
-        
-        # Urban Ketl logo section - reduced size
-        logo_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.15)
+        # Urban Kettle logo on the left side - same as payment_method_page
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
-        
         if os.path.exists(logo_path):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(200, 180),
+                size=(260, 230),
+                pos_hint={'x': 0.0, 'top': 1.35},  # Same as payment_method_page
                 allow_stretch=True,
                 keep_ratio=True
             )
-            logo_section.add_widget(logo_image)
+            top_bar.add_widget(logo_image)
         else:
-            # Fallback to text if image not found
             fallback_logo = Label(
                 text='Urban Ketl',
-                font_size='32sp',
+                font_size='28sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
-                halign='center'
+                pos_hint={'x': 0.02, 'top': 0.95},
+                halign='left'
             )
-            logo_section.add_widget(fallback_logo)
+            top_bar.add_widget(fallback_logo)
         
-        main_layout.add_widget(logo_section)
+        # Back button in top-right area
+        back_btn = SimpleButton(
+            text='Back',
+            size_hint=(None, None),
+            size=(140, 55),  # Increased from (100, 40)
+            font_size='22sp',  # Increased from 18sp
+            color=(1, 1, 1, 1),
+            bg_color=(0.6, 0.6, 0.6, 1)  # Gray color
+        )
+        back_btn.pos_hint = {'right': 0.98, 'top': 0.85}  # Moved down from 0.95 to 0.88
+        back_btn.bind(on_press=self.on_back_pressed)
+        top_bar.add_widget(back_btn)
+        
+        main_layout.add_widget(top_bar)
         
         # Spacing
         main_layout.add_widget(Widget(size_hint_y=0.02))
@@ -382,7 +381,7 @@ class SelectionPage(Screen):
         # Reset inactivity timer on user interaction
         self.reset_inactivity_timer()
         
-        # Check transaction limit first (5 cups max per transaction)
+        # Check transaction limit first (max 4 cups per transaction)
         if self.number_of_cups >= self.max_cups_per_transaction:
             # Show popup for transaction limit
             self.show_transaction_limit_popup()
@@ -390,6 +389,7 @@ class SelectionPage(Screen):
             self.number_of_cups += 1
             self.number_display.set_number(self.number_of_cups)
             print(f"✅ Increased cups to {self.number_of_cups}")
+            self._schedule_prefetch()
         else:
             # Show popup when trying to exceed available cups
             self.show_cups_limit_popup()
@@ -409,6 +409,19 @@ class SelectionPage(Screen):
             self.number_of_cups -= 1
             self.number_display.set_number(self.number_of_cups)
             print(f"✅ Decreased cups to {self.number_of_cups}")
+            self._schedule_prefetch()
+        else:
+            print("⚠️ Minimum 1 cup required")
+
+    def _schedule_prefetch(self):
+        """Debounce: wait 0.2s after last tap before firing API call."""
+        if self.prefetch_timer:
+            self.prefetch_timer.cancel()
+        self.prefetch_timer = Clock.schedule_once(self._execute_prefetch, 0.2)
+
+    def _execute_prefetch(self, dt):
+        print(f"🚀 Prefetching QR for {self.number_of_cups} cups...")
+        App.get_running_app().trigger_qr_prefetch(self.number_of_cups)
 
     def on_confirm_pay(self, instance):
         # Stop inactivity timer when confirming
@@ -419,10 +432,10 @@ class SelectionPage(Screen):
     
     def on_back_pressed(self, instance):
         """Navigate back to payment method page"""
-        # Stop inactivity timer when going back
         self.stop_inactivity_timer()
-        
-        self.manager.current = 'payment_method'
+        app = App.get_running_app()
+        app.cancel_prefetched_qrs()
+        app.show_payment_method_page()
 
     def get_cup_count(self):
         return self.number_of_cups
@@ -433,7 +446,10 @@ class SelectionPage(Screen):
         self.number_of_cups = 1
         if hasattr(self, 'number_display'):
             self.number_display.set_number(1)
-        
+
+        # Pre-fetch QR for the default 1-cup selection immediately
+        App.get_running_app().trigger_qr_prefetch(1)
+
         # Start inactivity timer
         self.start_inactivity_timer()
         
@@ -442,11 +458,12 @@ class SelectionPage(Screen):
     
     def on_leave(self):
         """Clean up when leaving page"""
-        # Stop inactivity timer
         self.stop_inactivity_timer()
-        
-        # Unbind touch events
         Window.unbind(on_touch_down=self.on_user_interaction)
+        # Cancel any pending debounced prefetch so it doesn't fire after leaving
+        if self.prefetch_timer:
+            self.prefetch_timer.cancel()
+            self.prefetch_timer = None
     
     def on_user_interaction(self, window, touch):
         """Reset inactivity timer on any touch interaction"""
@@ -473,7 +490,9 @@ class SelectionPage(Screen):
     def on_inactivity_timeout(self, dt):
         """Handle inactivity timeout - return to payment method page"""
         print("Selection page: Inactivity timeout - returning to payment method page")
-        self.manager.current = 'payment_method'
+        app = App.get_running_app()
+        app.cancel_prefetched_qrs()
+        app.show_payment_method_page()
     
     def set_max_cups(self, max_cups):
         """Set the maximum number of cups available"""

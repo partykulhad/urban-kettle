@@ -1,42 +1,95 @@
 #!/bin/bash
-# Urban Kettle - Raspberry Pi Launcher Script
-# This script ensures the app runs in fullscreen mode on Raspberry Pi
+# Urban Kettle — Production Launcher
+# Called by systemd (urban-kettle.service) on every boot.
+# Do NOT run run_all.sh for production — use this file only.
 
-echo "Starting Urban Kettle application for Raspberry Pi..."
+set -euo pipefail
 
-# Kill any existing browser instances to free up resources
-pkill chromium 2>/dev/null
-pkill firefox 2>/dev/null
+cd "$(dirname "$0")"
+APP_DIR="$(pwd)"
 
-# Set environment variables for optimal Kivy performance on Pi
+echo "========================================"
+echo "   Urban Kettle — Starting"
+echo "   Dir: $APP_DIR"
+echo "========================================"
+
+# ── Wait for X display ────────────────────────────────────────────────────────
+echo "Waiting for display server..."
+for i in $(seq 1 60); do
+    if xset -display :0 q &>/dev/null; then
+        echo "✓ Display ready (${i}s)"
+        break
+    fi
+    [ "$i" -eq 60 ] && echo "⚠️  Display not found after 60s — proceeding anyway"
+    sleep 1
+done
+
+# ── Environment ───────────────────────────────────────────────────────────────
+export DISPLAY=:0
+export XAUTHORITY="$HOME/.Xauthority"
 export KIVY_WINDOW=sdl2
 export KIVY_GL_BACKEND=gl
-
-# Disable multisampling for better performance
 export KIVY_MULTISAMPLES=0
 
-# Set display to use (usually :0 for main display)
-export DISPLAY=:0
+# ── Kill any stale instances ──────────────────────────────────────────────────
+pkill -f polling_server2.py 2>/dev/null || true
+pkill -f main_app.py        2>/dev/null || true
+sleep 1
 
-# Navigate to the application directory
-cd "$(dirname "$0")"
-
-# Activate virtual environment if it exists
-if [ -d "venv" ]; then
-    source venv/bin/activate
+# ── Activate virtualenv if present ───────────────────────────────────────────
+if [ -d "$APP_DIR/venv" ]; then
+    source "$APP_DIR/venv/bin/activate"
+    echo "✓ Virtualenv activated"
+else
+    echo "⚠️  No venv found — using system python3"
 fi
 
-# Launch the application
-# Use python3 directly (not through browser)
-python3 main_app.py
+PYTHON=$(command -v python3)
+echo "✓ Python: $PYTHON"
 
-# Alternative: If you need to run in kiosk mode with Chromium
-# Uncomment the following lines and comment the python3 line above
-# chromium-browser \
-#     --kiosk \
-#     --noerrdialogs \
-#     --disable-infobars \
-#     --disable-session-crashed-bubble \
-#     --check-for-update-interval=31536000 \
-#     --app="http://localhost:8080" &
-# python3 -m http.server 8080
+# ── Cleanup on exit ───────────────────────────────────────────────────────────
+cleanup() {
+    echo "🛑 Stopping Urban Kettle..."
+    pkill -f main_app.py        2>/dev/null || true
+    pkill -f polling_server2.py 2>/dev/null || true
+    echo "✓ Stopped"
+}
+trap cleanup SIGTERM SIGINT EXIT
+
+# ── Start backend ─────────────────────────────────────────────────────────────
+echo "Starting polling server (ESP32 bridge)..."
+"$PYTHON" "$APP_DIR/polling_server2.py" > "$APP_DIR/backend.log" 2>&1 &
+BACKEND_PID=$!
+
+# Wait up to 8s for backend to be ready
+for i in $(seq 1 8); do
+    sleep 1
+    kill -0 "$BACKEND_PID" 2>/dev/null || { echo "❌ Backend failed — check backend.log"; exit 1; }
+done
+echo "✅ Backend running (PID=$BACKEND_PID)"
+
+# ── Start frontend ────────────────────────────────────────────────────────────
+echo "Starting UI (main_app.py)..."
+"$PYTHON" "$APP_DIR/main_app.py" > "$APP_DIR/frontend.log" 2>&1 &
+FRONTEND_PID=$!
+
+sleep 3
+kill -0 "$FRONTEND_PID" 2>/dev/null || { echo "❌ Frontend failed — check frontend.log"; cat "$APP_DIR/frontend.log" | tail -30; exit 1; }
+echo "✅ Frontend running (PID=$FRONTEND_PID)"
+
+echo "========================================"
+echo "   Urban Kettle is RUNNING"
+echo "========================================"
+
+# ── Monitor — restart everything if either process dies ──────────────────────
+while true; do
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        echo "❌ Backend died — triggering service restart"
+        exit 1   # systemd Restart=always will relaunch
+    fi
+    if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+        echo "👋 Frontend exited — shutting down"
+        exit 0
+    fi
+    sleep 2
+done

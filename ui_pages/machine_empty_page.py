@@ -36,7 +36,7 @@ class MachineEmptyPage(Screen):
         # Top spacer
         main_layout.add_widget(Widget(size_hint_y=0.08))
         
-        # Urban Ketl logo section
+        # Urban Ketl logo section - standardized
         logo_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.25)
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
         
@@ -44,7 +44,7 @@ class MachineEmptyPage(Screen):
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(250, 225),
+                size=(260, 230),
                 allow_stretch=True,
                 keep_ratio=True
             )
@@ -197,13 +197,13 @@ class MachineEmptyPage(Screen):
                         print("Machine is still offline")
                         return
                     
-                    # Machine is now online - notify ESP32 of state change
-                    # Check if previous state was offline (we're on machine_empty page, so it was)
-                    if hasattr(app, 'previous_machine_state') and app.previous_machine_state == "offline":
-                        print("🟢 Machine state changed: OFFLINE → ONLINE (detected from machine_empty page)")
-                        if hasattr(app, 'send_machine_state_to_esp32'):
-                            app.send_machine_state_to_esp32("ONLINE", None)
-                        # Update the tracked state
+                    # Machine is now online - ALWAYS notify ESP32 when detecting online from machine_empty page
+                    # We're on machine_empty page, which means we were offline, so always send ONLINE
+                    print("🟢 Machine is now ONLINE (detected from machine_empty page)")
+                    if hasattr(app, 'send_machine_state_to_esp32'):
+                        app.send_machine_state_to_esp32("ONLINE", None)
+                    # Update the tracked state
+                    if hasattr(app, 'previous_machine_state'):
                         app.previous_machine_state = "online"
                 
                 # Check cups count and store locally

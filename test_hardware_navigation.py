@@ -76,7 +76,7 @@ def device_history(device_id):
                         "sensor:pt100_sensor_01": [{
                             "componentId": "pt100_sensor_01",
                             "status": "pass",
-                            "observedValue": 83,
+                            "observedValue": 86,
                             "unit": "°C"
                         }]
                     }

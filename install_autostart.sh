@@ -5,8 +5,15 @@ echo "=================================================="
 echo "Urban Kettle - Auto-Start Setup"
 echo "=================================================="
 
-# Check if running on Raspberry Pi
-if [ ! -f /etc/rpi-issue ]; then
+# Check if running on Raspberry Pi (works on all Pi OS versions)
+IS_PI=false
+if grep -qi "raspberry" /proc/device-tree/model 2>/dev/null; then
+    IS_PI=true
+elif grep -qi "raspberry" /proc/cpuinfo 2>/dev/null; then
+    IS_PI=true
+fi
+
+if [ "$IS_PI" = false ]; then
     echo "⚠️  Warning: This doesn't appear to be a Raspberry Pi"
     echo "Continue anyway? (y/n)"
     read -r response
@@ -14,6 +21,8 @@ if [ ! -f /etc/rpi-issue ]; then
         echo "Installation cancelled."
         exit 1
     fi
+else
+    echo "✓ Raspberry Pi detected"
 fi
 
 # Get the current directory

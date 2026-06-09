@@ -73,6 +73,8 @@ class RFIDAuthPage(Screen):
         self.pulse_animation = None
         self.start_time = 0
         self.timer_event = None
+        self.timeout_event = None  # 9-second timeout
+        self.auth_completed = False  # Track if auth completed
     
     def _update_rect(self, instance, value):
         self.rect.size = instance.size
@@ -81,9 +83,11 @@ class RFIDAuthPage(Screen):
     def start_auth(self):
         """Start authentication process"""
         self.start_time = Clock.get_time()
+        self.auth_completed = False
         self.update_step(1, "Reading card...")
         self.start_pulse_animation()
         self.start_timer()
+        self.start_timeout()
     
     def update_step(self, step, message):
         """Update the current step"""
@@ -119,6 +123,42 @@ class RFIDAuthPage(Screen):
             self.timer_event.cancel()
             self.timer_event = None
     
+    def start_timeout(self):
+        """Start 9-second timeout - auto-return to payment method if auth takes too long"""
+        self.cancel_timeout()
+        self.timeout_event = Clock.schedule_once(self.on_timeout, 9)
+        print("⏱️ RFID auth 9-second timeout started")
+    
+    def cancel_timeout(self):
+        """Cancel the timeout"""
+        if self.timeout_event:
+            self.timeout_event.cancel()
+            self.timeout_event = None
+    
+    def on_timeout(self, dt):
+        """Called when 9-second timeout expires"""
+        if self.auth_completed:
+            # Auth already completed, ignore timeout
+            return
+        
+        print("⏱️ RFID auth timeout (9s) - returning to payment method page")
+        self.stop_pulse_animation()
+        self.stop_timer()
+        self.icon_label.text = '⏱️'
+        self.status_label.text = 'Authentication Timeout'
+        self.status_label.color = (0.9, 0.6, 0.2, 1)  # Orange
+        self.step_label.text = 'Please try again'
+        self.timer_label.text = 'Timed out after 9s'
+        
+        # Navigate back to payment method page after 1.5 seconds
+        from kivy.app import App
+        app = App.get_running_app()
+        Clock.schedule_once(lambda dt: app.show_page('payment_method'), 1.5)
+        
+        # Restart RFID polling
+        if hasattr(app, 'payment_method_page') and hasattr(app.payment_method_page, 'restart_rfid_after_auth'):
+            Clock.schedule_once(lambda dt: app.payment_method_page.restart_rfid_after_auth(), 1.5)
+    
     def update_timer(self, dt):
         """Update elapsed time"""
         elapsed = Clock.get_time() - self.start_time
@@ -126,6 +166,8 @@ class RFIDAuthPage(Screen):
     
     def show_success(self, balance):
         """Show success message"""
+        self.auth_completed = True  # Mark as completed
+        self.cancel_timeout()  # Cancel the 9-second timeout
         self.stop_pulse_animation()
         self.stop_timer()
         self.icon_label.text = '✅'
@@ -137,6 +179,8 @@ class RFIDAuthPage(Screen):
     
     def show_error(self, error_msg):
         """Show error message"""
+        self.auth_completed = True  # Mark as completed
+        self.cancel_timeout()  # Cancel the 9-second timeout
         self.stop_pulse_animation()
         self.stop_timer()
         self.icon_label.text = '❌'
@@ -150,4 +194,5 @@ class RFIDAuthPage(Screen):
         """Clean up when leaving"""
         self.stop_pulse_animation()
         self.stop_timer()
+        self.cancel_timeout()  # Cancel timeout when leaving page
         return super().on_leave()

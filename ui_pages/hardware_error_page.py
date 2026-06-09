@@ -5,6 +5,7 @@ from kivy.uix.button import Button
 from kivy.graphics import Color, RoundedRectangle
 from kivy.clock import Clock
 from utils.hardware_monitor import hardware_monitor
+import threading
 
 class HardwareErrorPage(Screen):
     """Page displayed when a critical hardware error occurs"""
@@ -65,18 +66,18 @@ class HardwareErrorPage(Screen):
         
         # Monitor event
         self.monitor_event = None
-    
+        self._check_in_progress = False  # guard: only one background check at a time
+
     def _update_rect(self, instance, value):
         self.rect.size = instance.size
         self.rect.pos = instance.pos
-        
+
     def on_enter(self):
         """Called when screen is entered"""
-        # Start monitoring error status
-        self.monitor_event = Clock.schedule_interval(self.check_status, 1)
-        # Initial check
+        self._check_in_progress = False
+        self.monitor_event = Clock.schedule_interval(self.check_status, 3)
         self.check_status(0)
-        
+
     def on_leave(self):
         """Called when screen is left"""
         print("🛑 Hardware Error Page: on_leave() called - stopping monitoring")
@@ -84,40 +85,45 @@ class HardwareErrorPage(Screen):
             self.monitor_event.cancel()
             self.monitor_event = None
             print("✅ Hardware Error Page: Monitoring stopped")
-            
+
     def check_status(self, dt):
-        """Check if error persists"""
-        result = hardware_monitor.get_latest_error()
-        
-        # Result can be: error message string, None (no error), or tuple (status, temp)
+        """Kick off a background check — never blocks the Kivy main thread."""
+        if self._check_in_progress:
+            return
+        self._check_in_progress = True
+        threading.Thread(target=self._do_check, daemon=True).start()
+
+    def _do_check(self):
+        """Run get_latest_error() in a background thread, marshal result back."""
+        try:
+            result = hardware_monitor.get_latest_error()
+        except Exception as e:
+            result = f"Check failed: {e}"
+        finally:
+            self._check_in_progress = False
+        Clock.schedule_once(lambda dt: self._apply_result(result), 0)
+
+    def _apply_result(self, result):
+        """Process result on the Kivy main thread. Guard against stale callbacks."""
+        from kivy.app import App
+        app = App.get_running_app()
+        if app.screen_manager.current != self.name:
+            return
+
         if isinstance(result, tuple) and result[0] == 'HEATING':
-            # Temperature is low - navigate to heating page
             temp = result[1]
             print(f"Temperature low ({temp}°C) - Navigating to Heating page")
-            from kivy.app import App
-            app = App.get_running_app()
-            if app.screen_manager.current == self.name:
-                app.show_heating_page(temp)
+            app.show_heating_page(temp)
         elif result:
-            # Error still present, update message
             self.message_label.text = result
         else:
-            # Error cleared! Navigate back to Home with cups fetch
             print("Hardware error cleared - Navigating to Home and fetching cups")
-            from kivy.app import App
-            app = App.get_running_app()
-            
-            # Notify ESP32 that machine is back ONLINE if previous state was offline
             if hasattr(app, 'previous_machine_state') and app.previous_machine_state == "offline":
                 print("🟢 Machine state changed: OFFLINE → ONLINE (detected from hardware_error page)")
                 if hasattr(app, 'send_machine_state_to_esp32'):
                     app.send_machine_state_to_esp32("ONLINE", None)
-                # Update the tracked state
                 app.previous_machine_state = "online"
-            
-            # Navigate to payment method page (Home) and fetch cups count
-            if app.screen_manager.current == self.name:
-                app.show_payment_method_page(fetch_cups=True)
+            app.show_payment_method_page(fetch_cups=True)
                 
     def update_error(self, message):
         """Update the error message"""

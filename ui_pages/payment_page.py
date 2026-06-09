@@ -50,57 +50,52 @@ class PaymentPage(Screen):
         # Cancel button debouncing
         self.cancel_pressed = False
         
-        # Main layout - optimized for 7-inch tablet
-        main_layout = BoxLayout(orientation='vertical', padding=[30, 20], spacing=10)
+        # Main layout - no padding to match payment_method_page exactly
+        main_layout = BoxLayout(orientation='vertical')
         with main_layout.canvas.before:
             Color(1, 1, 1, 1)  # White background
             self.rect = RoundedRectangle(size=Window.size, pos=self.pos)
         main_layout.bind(size=self._update_rect)
         
-        # Top section with logo on left and SCAN TO PAY
-        top_section = BoxLayout(orientation='vertical', size_hint_y=0.15, padding=[10, 5])
+        # Top bar with logo on left - matching payment_method_page exactly
+        from kivy.uix.floatlayout import FloatLayout
+        top_bar = FloatLayout(size_hint_y=0.15)
         
-        # Logo on the left using FloatLayout
-        logo_float = BoxLayout(size_hint_y=0.55)
+        # Urban Kettle logo on the left side - same as payment_method_page
         logo_path = os.path.join('assets', 'urban_ketl_logo.png')
-        
         if os.path.exists(logo_path):
-            from kivy.uix.floatlayout import FloatLayout
-            logo_container = FloatLayout()
             logo_image = Image(
                 source=logo_path,
                 size_hint=(None, None),
-                size=(200, 170),
-                pos_hint={'x': 0.0, 'top': 1.2},
+                size=(260, 230),
+                pos_hint={'x': 0.0, 'top': 1.35},
                 allow_stretch=True,
                 keep_ratio=True
             )
-            logo_container.add_widget(logo_image)
-            logo_float.add_widget(logo_container)
+            top_bar.add_widget(logo_image)
         else:
             fallback_logo = Label(
                 text='Urban Ketl',
                 font_size='28sp',
                 bold=True,
                 color=(0.714, 0.478, 0.176, 1),
+                pos_hint={'x': 0.02, 'top': 0.95},
                 halign='left'
             )
-            logo_float.add_widget(fallback_logo)
+            top_bar.add_widget(fallback_logo)
         
-        top_section.add_widget(logo_float)
+        main_layout.add_widget(top_bar)
         
-        # "SCAN TO PAY" text - reduced size and moved up
+        # "SCAN TO PAY" text
         scan_label = Label(
             text='SCAN TO PAY',
             font_size='32sp',
             bold=True,
             color=(0.714, 0.478, 0.176, 1),
             halign='center',
-            size_hint_y=0.45
+            size_hint_y=0.08
         )
-        top_section.add_widget(scan_label)
-        
-        main_layout.add_widget(top_section)
+        main_layout.add_widget(scan_label)
         
         # Spacing after SCAN TO PAY
         main_layout.add_widget(Widget(size_hint_y=0.02))
@@ -218,10 +213,6 @@ class PaymentPage(Screen):
         self.rect.size = instance.size
         self.rect.pos = instance.pos
     
-    def _update_qr_bg(self, instance, value):
-        self.qr_bg.pos = instance.pos
-        self.qr_bg.size = instance.size
-
     def _update_qr_bg(self, instance, value):
         self.qr_bg.pos = instance.pos
         self.qr_bg.size = instance.size
