@@ -945,7 +945,11 @@ class ChaiOrderingApp(App):
             water_result = self.api_client.water_flush(DEVICE_ID)
 
             if water_result:
-                print("✅ [Flush] Water flush complete")
+                if water_result.get('dispatched'):
+                    print(f"⚠️ [Flush] Water flush dispatched but NOT confirmed by ESP32 "
+                          f"(server timed out waiting for result) — raw: {water_result}")
+                else:
+                    print(f"✅ [Flush] Water flush confirmed by ESP32 — raw: {water_result}")
             else:
                 print("❌ [Flush] Water flush command failed — skipping tea flush")
                 return
@@ -1044,7 +1048,10 @@ class ChaiOrderingApp(App):
             if not w1:
                 print("❌ [RefillFlush] Step 1 water flush failed — aborting")
                 return
-            print("✅ [RefillFlush] Step 1 done — waiting 10 s")
+            if w1.get('dispatched'):
+                print(f"⚠️ [RefillFlush] Step 1 water flush dispatched but NOT confirmed by ESP32 — raw: {w1}")
+            else:
+                print(f"✅ [RefillFlush] Step 1 confirmed by ESP32 — raw: {w1}")
             Clock.schedule_once(lambda dt: self.flush_page.start_wait_countdown(10), 0)
             _time.sleep(10)
 
@@ -1056,7 +1063,10 @@ class ChaiOrderingApp(App):
             if not w2:
                 print("❌ [RefillFlush] Step 2 water flush failed — aborting")
                 return
-            print("✅ [RefillFlush] Step 2 done — waiting 10 s")
+            if w2.get('dispatched'):
+                print(f"⚠️ [RefillFlush] Step 2 water flush dispatched but NOT confirmed by ESP32 — raw: {w2}")
+            else:
+                print(f"✅ [RefillFlush] Step 2 confirmed by ESP32 — raw: {w2}")
             Clock.schedule_once(lambda dt: self.flush_page.start_wait_countdown(10), 0)
             _time.sleep(10)
 
