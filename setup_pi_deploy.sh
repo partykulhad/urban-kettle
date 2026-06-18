@@ -13,6 +13,26 @@ REPO_URL="https://github.com/partykulhad/urban-kettle.git"
 SERVICE="urban-kettle"
 CRON_LINE="*/5 * * * * $REPO_DIR/update.sh"
 
+echo "==> Checking GitHub is reachable before touching the running service..."
+if ! git ls-remote "$REPO_URL" main >/dev/null 2>&1; then
+    echo "❌ Cannot reach $REPO_URL — github.com may not be whitelisted on this network yet."
+    echo "   The running kiosk has NOT been touched. Fix network/whitelist access and re-run this script."
+    exit 1
+fi
+echo "    GitHub reachable — proceeding."
+
+# Safety net: if anything fails after this point (stop), make sure the
+# service comes back up rather than leaving the kiosk down. set -e means
+# any failing command below exits immediately; this trap runs on any exit.
+SERVICE_RESTARTED_BY_TRAP=0
+ensure_service_running() {
+    if [ "$SERVICE_RESTARTED_BY_TRAP" -eq 0 ]; then
+        echo "==> (safety net) Restarting $SERVICE so the kiosk isn't left down..."
+        sudo systemctl start "$SERVICE" 2>/dev/null || true
+    fi
+}
+trap ensure_service_running EXIT
+
 echo "==> Stopping $SERVICE (if running)..."
 sudo systemctl stop "$SERVICE" 2>/dev/null || true
 
@@ -66,6 +86,7 @@ echo "==> Installing 5-minute cron job (idempotent — won't duplicate on re-run
 
 echo "==> Starting $SERVICE..."
 sudo systemctl start "$SERVICE"
+SERVICE_RESTARTED_BY_TRAP=1
 
 echo ""
 echo "Done. Current crontab:"
