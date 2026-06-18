@@ -82,7 +82,11 @@ echo "$CURRENT_USER ALL=(ALL) NOPASSWD: /bin/systemctl restart $SERVICE" | sudo 
 sudo chmod 440 /etc/sudoers.d/urban-kettle-restart
 
 echo "==> Installing 5-minute cron job (idempotent — won't duplicate on re-run)..."
-( crontab -l 2>/dev/null | grep -vF "$REPO_DIR/update.sh" ; echo "$CRON_LINE" ) | crontab -
+# `|| true` on the read side: a brand-new user/machine has no crontab yet, so both
+# `crontab -l` and the `grep` on its empty output exit non-zero. Under
+# `set -euo pipefail` that would otherwise abort this script right here — silently
+# skipping cron install while the EXIT trap's safety-net restart masks the failure.
+( crontab -l 2>/dev/null | grep -vF "$REPO_DIR/update.sh" || true ; echo "$CRON_LINE" ) | crontab -
 
 echo "==> Starting $SERVICE..."
 sudo systemctl start "$SERVICE"
