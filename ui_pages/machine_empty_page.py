@@ -21,10 +21,14 @@ class MachineEmptyPage(Screen):
         # Animation variables
         self.dots_animation_state = 0
         self.dots_timer = None
-        
+
+        # Track which mode we're in so screensaver logic can read it
+        self.current_mode = 'empty'  # 'empty' or 'offline'
+
         # Cups check timer
         self.cups_check_timer = None
-        self.cups_check_interval = 5  # Check every 5 seconds
+        self.cups_check_interval = 3  # Check every 3 seconds
+        self._refill_confirm_count = 0  # consecutive cups>0 reads — debounce flaky/stale reads
         
         # Main layout with clean background - optimized for 7-inch tablet
         main_layout = BoxLayout(orientation='vertical', padding=[30, 20], spacing=15)
@@ -69,32 +73,32 @@ class MachineEmptyPage(Screen):
         message_section = BoxLayout(orientation='vertical', size_hint_y=0.30, spacing=10)
         
         # Main title
-        title_label = Label(
+        self.title_label = Label(
             text="We'll be back soon!",
             font_size='28sp',
             bold=True,
             color=(0.3, 0.3, 0.3, 1),
             halign='center'
         )
-        message_section.add_widget(title_label)
-        
+        message_section.add_widget(self.title_label)
+
         # Subtitle
-        subtitle_label = Label(
+        self.subtitle_label = Label(
             text="Machine is empty",
             font_size='22sp',
             color=(0.5, 0.5, 0.5, 1),
             halign='center'
         )
-        message_section.add_widget(subtitle_label)
-        
+        message_section.add_widget(self.subtitle_label)
+
         # Info message
-        info_label = Label(
+        self.info_label = Label(
             text="Refiller is on its way\nTry again after some time",
             font_size='20sp',
             color=(0.6, 0.6, 0.6, 1),
             halign='center'
         )
-        message_section.add_widget(info_label)
+        message_section.add_widget(self.info_label)
         
         main_layout.add_widget(message_section)
         
@@ -114,6 +118,19 @@ class MachineEmptyPage(Screen):
         
         self.add_widget(main_layout)
     
+    def set_mode(self, mode):
+        """Switch between 'empty' (cups = 0), 'offline' (ESP32/machine offline),
+        and 'water_low' (ESP32 reported waterLevelLow=True)."""
+        self.current_mode = mode
+        if mode == 'offline' or mode == 'water_low':
+            self.title_label.text = "Under Maintenance"
+            self.subtitle_label.text = "We'll be back soon!"
+            self.info_label.text = "Sorry for the inconvenience\nPlease check back shortly"
+        else:
+            self.title_label.text = "We'll be back soon!"
+            self.subtitle_label.text = "Machine is empty"
+            self.info_label.text = "Refiller is on its way\nTry again after some time"
+
     def _update_rect(self, instance, value):
         """Update background rectangle"""
         self.rect.size = instance.size
@@ -122,7 +139,8 @@ class MachineEmptyPage(Screen):
     def on_enter(self):
         """Start animations when page becomes active"""
         self.start_dots_animation()
-        
+        self._refill_confirm_count = 0  # fresh start — don't trust a stale count from before
+
         # Start periodic cups check
         self.start_cups_check_timer()
     
@@ -170,62 +188,142 @@ class MachineEmptyPage(Screen):
             print("Stopped cups availability check timer")
     
     def check_cups_availability(self):
-        """Check if cups are available and return to payment method page if so"""
-        threading.Thread(target=self.fetch_cups_count, daemon=True).start()
-    
+        """Check if cups are available and return to payment method page if so.
+        Guarded against overlapping calls: if a slow network response makes one
+        check still running when the next 3s tick fires, _refill_confirm_count
+        (and the cups/online navigation decisions below) could be mutated from
+        two threads at once.
+        """
+        if getattr(self, '_checking_cups_availability', False):
+            return
+        self._checking_cups_availability = True
+        threading.Thread(target=self._fetch_cups_count_guarded, daemon=True).start()
+
+    def _fetch_cups_count_guarded(self):
+        try:
+            self.fetch_cups_count()
+        finally:
+            self._checking_cups_availability = False
+
     def fetch_cups_count(self):
-        """Fetch cups count and machine status from API in background thread - called once on page enter"""
+        """Check ESP32 machineState + cups count; navigate home if machine is back online with cups."""
         from kivy.app import App
         app = App.get_running_app()
-        
+
+        # Water-level-low mode has its own recovery condition (waterLevelLow
+        # clearing) — it is NOT driven by ESP32 online state or cups count,
+        # so it's checked separately and skips the rest of this method.
+        if self.current_mode == 'water_low':
+            threading.Thread(target=self._check_water_level_recovery, daemon=True).start()
+            return
+
         try:
-            # Call API to check machine status and cups
+            from config import DEVICE_ID, POLLING_SERVER_URL
+            from utils.api_client import get_localhost_session
+
+            # ── 1. Check ESP32 machineState from local polling server ──────────
+            is_online = False  # default: assume offline until confirmed
+            try:
+                import time as _time
+                r = get_localhost_session().get(
+                    f"{POLLING_SERVER_URL}/api/device/{DEVICE_ID}/temperature",
+                    timeout=2
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    machine_state = data.get('machineState', 'UNKNOWN').upper()
+                    ts = data.get('timestamp')
+                    # Also treat as offline if last health POST is more than 90s old
+                    if ts:
+                        from datetime import datetime as _dt
+                        age = _time.time() - _dt.fromisoformat(ts).timestamp()
+                        if age > 90:
+                            machine_state = 'OFFLINE'
+                    is_online = machine_state != 'OFFLINE'
+                    print(f"[MachineEmpty] ESP32 machineState={machine_state}, is_online={is_online}")
+                else:
+                    # 404 = no health POSTs received yet → ESP32 not connected
+                    print(f"[MachineEmpty] Polling server returned {r.status_code} — ESP32 not connected")
+            except Exception as poll_err:
+                print(f"[MachineEmpty] Polling server unreachable: {poll_err} — staying offline")
+
+            if not is_online:
+                print("[MachineEmpty] Machine still OFFLINE — staying on page")
+                return
+
+            # ── Machine came back online ───────────────────────────────────────
+            if hasattr(app, 'previous_machine_state') and app.previous_machine_state == "offline":
+                print("🟢 Machine back ONLINE (detected from machine_empty page)")
+                app.previous_machine_state = "online"
+                # Notify kulhad that machine is back online
+                threading.Thread(
+                    target=lambda: app.api_client.report_machine_status(app.MACHINE_ID, 'online'),
+                    daemon=True
+                ).start()
+
+            # ── 2. Check cups count ────────────────────────────────────────────
             if hasattr(app, 'api_client') and hasattr(app, 'MACHINE_ID'):
-                # Check machine status first
-                status_data = app.api_client.check_machine_status(app.MACHINE_ID)
-                
-                if status_data and status_data.get("success", False):
-                    # Get status from nested data object
-                    data = status_data.get("data", {})
-                    machine_status = data.get("status", "offline")
-                    is_online = machine_status.lower() == "online"
-                    
-                    print(f"Machine status check: {machine_status}, is_online: {is_online}")
-                    
-                    if not is_online:
-                        # Machine is still offline, stay on this page
-                        print("Machine is still offline")
-                        return
-                    
-                    # Machine is now online - ALWAYS notify ESP32 when detecting online from machine_empty page
-                    # We're on machine_empty page, which means we were offline, so always send ONLINE
-                    print("🟢 Machine is now ONLINE (detected from machine_empty page)")
-                    if hasattr(app, 'send_machine_state_to_esp32'):
-                        app.send_machine_state_to_esp32("ONLINE", None)
-                    # Update the tracked state
-                    if hasattr(app, 'previous_machine_state'):
-                        app.previous_machine_state = "online"
-                
-                # Check cups count and store locally
                 cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)
-                
-                # Check if cups are now available
                 if cups_data and cups_data.get("success", False):
                     cups_count = cups_data.get("cups", 0)
-                    
-                    # Store locally
-                    Clock.schedule_once(lambda dt: app.set_local_cups_count(cups_count))
-                    
-                    # If machine is online and cups are available, return to payment method page
-                    if cups_count > 0:
-                        print(f"Machine is online and cups available ({cups_count}), returning to payment method page")
-                        Clock.schedule_once(lambda dt: self.return_to_payment_method())
+                    from config import MACHINE_EMPTY_THRESHOLD
+                    if cups_count > MACHINE_EMPTY_THRESHOLD:
+                        # Require 2 consecutive confirmed-restocked reads (~6s apart)
+                        # before acting — a single flaky/stale read from get_remaining_cups
+                        # (which reads via a reduce-by-0 call, not a dedicated read
+                        # endpoint) shouldn't bounce the screen back to selection only
+                        # to find it's still at/below the empty threshold.
+                        self._refill_confirm_count += 1
+                        if self._refill_confirm_count < 2:
+                            print(f"[MachineEmpty] cups={cups_count} (unconfirmed, "
+                                  f"{self._refill_confirm_count}/2) — waiting for confirmation")
+                            return
+                        Clock.schedule_once(lambda dt, c=cups_count: app.set_local_cups_count(c))
+                        if self.current_mode == 'empty':
+                            # Cups genuinely hit the empty threshold → restocked — run the refill flush.
+                            print(f"[MachineEmpty] Cups refilled ({MACHINE_EMPTY_THRESHOLD} or below → {cups_count}) — returning home via refill flush")
+                            Clock.schedule_once(lambda dt: self.return_to_payment_method())
+                        else:
+                            # 'offline' mode (ESP32 connectivity blip) — cups never hit the
+                            # threshold, so this is not a refill. Go home directly, skip the flush.
+                            print(f"[MachineEmpty] Machine online, cups={cups_count} — returning home (no refill flush, was never empty)")
+                            Clock.schedule_once(lambda dt: app.show_payment_method_page(fetch_cups=True))
+                    else:
+                        # Online but at/below the empty threshold — switch to the 'empty' message
+                        self._refill_confirm_count = 0
+                        Clock.schedule_once(lambda dt, c=cups_count: app.set_local_cups_count(c))
+                        print(f"[MachineEmpty] Machine online but cups={cups_count} (<= {MACHINE_EMPTY_THRESHOLD}) — switching to empty mode")
+                        Clock.schedule_once(lambda dt: self.set_mode('empty'), 0)
+                else:
+                    # Kulhad API unreachable — still go home; cups will be re-fetched there
+                    print("[MachineEmpty] Cups API failed — navigating home anyway (machine is online)")
+                    Clock.schedule_once(lambda dt: self.return_to_payment_method())
         except Exception as e:
             print(f"Error checking machine availability: {e}")
     
+    def _check_water_level_recovery(self):
+        """While in 'water_low' mode, poll the ESP32's waterLevelLow flag and
+        return to selection once it clears (e.g. tank was refilled).
+        """
+        from kivy.app import App
+        from utils.hardware_monitor import hardware_monitor
+        app = App.get_running_app()
+        try:
+            still_low = hardware_monitor.get_water_level_low()
+            if not still_low:
+                print("🟢 [MachineEmpty] waterLevelLow cleared — returning to selection")
+                if hasattr(app, 'clear_water_level_low'):
+                    Clock.schedule_once(lambda dt: app.clear_water_level_low(), 0)
+        except Exception as e:
+            print(f"[MachineEmpty] water level recovery check error: {e}")
+
     def return_to_payment_method(self):
-        """Return to payment method page and fetch cups count"""
+        """Cups were just refilled — hand off to handle_cups_refill() which runs
+        a temp check then the water×2 + tea flush before going to selection.
+        """
         from kivy.app import App
         app = App.get_running_app()
-        # Navigate to home and fetch cups count
-        app.show_payment_method_page(fetch_cups=True)
+        if hasattr(app, 'handle_cups_refill'):
+            app.handle_cups_refill()
+        else:
+            app.show_payment_method_page(fetch_cups=True)

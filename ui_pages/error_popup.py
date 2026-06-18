@@ -142,26 +142,44 @@ class QRErrorPopup(Popup):
         )
         content.add_widget(message_label)
         
-        # Retry button - Orange color matching app theme
+        # Retry button - Orange
         retry_btn = Button(
-            text='Retry',
+            text='Try Again',
             size_hint=(None, None),
-            size=(180, 55),
-            pos_hint={'center_x': 0.5, 'center_y': 0.22},
+            size=(170, 55),
+            pos_hint={'center_x': 0.3, 'center_y': 0.22},
             background_color=(0, 0, 0, 0),
             background_normal='',
             color=(1, 1, 1, 1),
             font_size='20sp',
             bold=True
         )
-        # Add rounded background to button
         with retry_btn.canvas.before:
-            Color(0.949, 0.6, 0.0, 1)  # Orange color
+            Color(0.949, 0.6, 0.0, 1)  # Orange
             self.retry_btn_bg = RoundedRectangle(size=retry_btn.size, pos=retry_btn.pos, radius=[15])
         retry_btn.bind(size=self._update_retry_btn, pos=self._update_retry_btn)
         retry_btn.bind(on_press=self._on_retry_pressed)
         content.add_widget(retry_btn)
-        
+
+        # Go Back button - grey
+        back_btn = Button(
+            text='Go Back',
+            size_hint=(None, None),
+            size=(170, 55),
+            pos_hint={'center_x': 0.7, 'center_y': 0.22},
+            background_color=(0, 0, 0, 0),
+            background_normal='',
+            color=(1, 1, 1, 1),
+            font_size='20sp',
+            bold=True
+        )
+        with back_btn.canvas.before:
+            Color(0.45, 0.45, 0.45, 1)  # Grey
+            self.back_btn_bg = RoundedRectangle(size=back_btn.size, pos=back_btn.pos, radius=[15])
+        back_btn.bind(size=self._update_back_btn, pos=self._update_back_btn)
+        back_btn.bind(on_press=self._on_back_pressed)
+        content.add_widget(back_btn)
+
         # Initialize Popup
         super().__init__(
             title='',
@@ -182,10 +200,22 @@ class QRErrorPopup(Popup):
         self.bg_rect.pos = self.content.pos
     
     def _update_retry_btn(self, instance, value):
-        """Update retry button background"""
         self.retry_btn_bg.size = instance.size
         self.retry_btn_bg.pos = instance.pos
-    
+
+    def _update_back_btn(self, instance, value):
+        self.back_btn_bg.size = instance.size
+        self.back_btn_bg.pos = instance.pos
+
+    def _on_back_pressed(self, instance):
+        """Immediately return to home — no retry attempt."""
+        if self.auto_dismiss_event:
+            self.auto_dismiss_event.cancel()
+            self.auto_dismiss_event = None
+        self.dismiss()
+        if self.on_cancel_callback:
+            self.on_cancel_callback()
+
     def _on_retry_pressed(self, instance):
         """Handle retry button press"""
         self.is_retry_clicked = True

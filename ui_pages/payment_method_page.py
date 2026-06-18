@@ -1023,7 +1023,8 @@ class PaymentMethodPage(Screen):
                 print("Cups data still loading, please wait...")
                 return
             
-            if cups_count <= 0:
+            from config import MACHINE_EMPTY_THRESHOLD
+            if cups_count <= MACHINE_EMPTY_THRESHOLD:
                 print(f"No cups available ({cups_count}), ignoring click - will auto-navigate to machine empty page")
                 # Don't show popup - background refresh will handle navigation to machine empty page
                 return
@@ -1082,56 +1083,53 @@ class PaymentMethodPage(Screen):
         app = App.get_running_app()
         
         try:
-            # Use local cups count if already initialized
+            # Use local cups count only when it's above the empty threshold — a
+            # local count at/below the threshold is stale from the previous dispense
+            # and must be verified with the API before showing machine_empty (the
+            # machine may have been refilled).
+            from config import MACHINE_EMPTY_THRESHOLD
             if hasattr(app, 'cups_count_initialized') and app.cups_count_initialized and hasattr(app, 'local_cups_count') and app.local_cups_count is not None:
-                print(f"✅ Using local cups count: {app.local_cups_count}")
-                Clock.schedule_once(lambda dt: self.update_cups_display(app.local_cups_count))
-                
-                if app.local_cups_count <= 0:
-                    print("No cups available (local), navigating to machine empty page")
-                    Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
-                return
+                if app.local_cups_count > MACHINE_EMPTY_THRESHOLD:
+                    print(f"✅ Using local cups count: {app.local_cups_count}")
+                    Clock.schedule_once(lambda dt: self.update_cups_display(app.local_cups_count))
+                    return
+                # local count is at/below the threshold — fall through to API to confirm before navigating
+                print(f"⚠️ Local count is {app.local_cups_count} (<= {MACHINE_EMPTY_THRESHOLD}), verifying with API before showing machine_empty...")
             
-            # Only fetch from API if local count not initialized
-            print("🔄 Local cups count not initialized, fetching from API...")
+            # Verify cups count via API (local is 0 or not yet initialized).
+            # Machine "online/offline" status is NOT checked here — a transient cloud
+            # status blip must not show machine_empty. Only a confirmed 0 cups count
+            # from the API is authoritative. Machine offline is handled separately by
+            # the global status monitor in main_app.py (consecutive-check guard).
+            print("🔄 Verifying cups count via API...")
             Clock.schedule_once(lambda dt: self.cups_counter.set_loading())
-            
-            # Check machine status first
+
             if hasattr(app, 'api_client') and hasattr(app, 'MACHINE_ID'):
-                # Check machine status
-                status_data = app.api_client.check_machine_status(app.MACHINE_ID)
-                
-                if status_data and status_data.get("success", False):
-                    # Get status from nested data object
-                    data = status_data.get("data", {})
-                    machine_status = data.get("status", "offline")
-                    is_online = machine_status.lower() == "online"
-                    
-                    print(f"Machine status: {machine_status}, is_online: {is_online}")
-                    
-                    if not is_online:
-                        # Machine is offline - navigate to machine empty page
-                        print("Machine is offline, navigating to machine empty page")
-                        Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
-                        return
-                
-                # Check cups count and store locally
                 cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)
 
                 if cups_data and cups_data.get("success", False):
                     cups_count = cups_data.get("cups", 0)
+                    print(f"✅ API cups count: {cups_count}")
                     Clock.schedule_once(lambda dt: app.set_local_cups_count(cups_count))
                     Clock.schedule_once(lambda dt: self.update_cups_display(cups_count))
 
-                    if cups_count <= 0:
-                        print("No cups available, navigating to machine empty page")
-                        Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
-                        return
+                    if cups_count <= MACHINE_EMPTY_THRESHOLD:
+                        # Only navigate to machine_empty if the local counter was already
+                        # initialised and at/below the threshold (i.e. we previously
+                        # decremented down via a real dispense).  If local was never
+                        # initialised (startup DNS failure, first boot) the cloud might
+                        # be returning stale/wrong data — be conservative and just show
+                        # an error indicator instead.
+                        if app.cups_count_initialized:
+                            print(f"No cups available (API confirmed cups={cups_count}, local was initialised), navigating to machine empty page")
+                            Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
+                        else:
+                            print(f"⚠️ API returned cups={cups_count} but local was never initialised — showing error (not machine_empty)")
+                            Clock.schedule_once(lambda dt: self.cups_counter.set_error())
                 else:
-                    # API call failed - show error
+                    # API call failed — don't navigate, just show error indicator
                     Clock.schedule_once(lambda dt: self.cups_counter.set_error())
             else:
-                # No API client - show error
                 Clock.schedule_once(lambda dt: self.cups_counter.set_error())
                 
         except Exception as e:
@@ -1163,11 +1161,6 @@ class PaymentMethodPage(Screen):
     def update_cups_display(self, cups_count):
         """Update the cups counter display"""
         self.cups_counter.set_cups_count(cups_count)
-        
-        # If cups count is 0, navigate to machine empty page
-        if cups_count <= 0:
-            print("Machine is empty (0 cups), navigating to machine empty page")
-            Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0.5)
             
     def refresh_cups_count(self):
         """Refresh cups count display using local counter"""
@@ -1217,12 +1210,16 @@ class PaymentMethodPage(Screen):
         # Update last scan time
         self.last_rfid_scan_time = current_time
         
-        # Check if cups count is 0 (machine effectively offline)
-        if hasattr(self, 'cups_counter') and hasattr(self.cups_counter, 'cups_count'):
-            if self.cups_counter.cups_count <= 0:
-                print("No cups remaining, showing offline popup")
-                Clock.schedule_once(lambda dt: self.show_offline_popup_for_rfid())
-                return
+        # Check if cups count is at/below the empty threshold (machine effectively offline).
+        # Use app.local_cups_count — cups_counter may be stale if this page was never entered.
+        from kivy.app import App as _App
+        from config import MACHINE_EMPTY_THRESHOLD
+        _app = _App.get_running_app()
+        _local_cups = getattr(_app, 'local_cups_count', None)
+        if _local_cups is not None and _local_cups <= MACHINE_EMPTY_THRESHOLD:
+            print("No cups remaining, showing offline popup")
+            Clock.schedule_once(lambda dt: self.show_offline_popup_for_rfid())
+            return
         
         # Disable RFID listening and STOP POLLING to prevent interference
         self.rfid_listening = False
@@ -1240,9 +1237,10 @@ class PaymentMethodPage(Screen):
         """Restart RFID polling after authentication attempt"""
         from kivy.app import App
         app = App.get_running_app()
-        # Only restart if we're still on the payment method page
-        if app and app.screen_manager.current != 'payment_method':
-            print("🏷️ RFID restart skipped — no longer on payment_method page")
+        # Restart on any home-equivalent screen (selection is the new home)
+        current = app.screen_manager.current if app else None
+        if current not in ('payment_method', 'selection'):
+            print(f"🏷️ RFID restart skipped — no longer on home page (current: {current})")
             return
         self.rfid_listening = True
         self.start_rfid_polling()
@@ -1284,7 +1282,7 @@ class PaymentMethodPage(Screen):
         except Exception as e:
             print(f"Error authenticating RFID card: {e}")
             Clock.schedule_once(lambda dt: app.rfid_auth_page.show_error(str(e)))
-            Clock.schedule_once(lambda dt: app.show_page('payment_method'), 3)
+            Clock.schedule_once(lambda dt: app.show_payment_method_page(), 3)
             # restart_rfid_event (set in handle_rfid_card_detected) already handles restart
     
     def handle_rfid_validation_result(self, validation_result):
@@ -1317,11 +1315,14 @@ class PaymentMethodPage(Screen):
             
             # Return to payment method page after 3 seconds
             Clock.schedule_once(lambda dt: self.restart_rfid_after_auth(), 3)
-            Clock.schedule_once(lambda dt: app.show_page('payment_method'), 3)
+            Clock.schedule_once(lambda dt: app.show_payment_method_page(), 3)
             return
         
-        # Check if authentication was successful and dispensed (regular dispensing card)
-        if validation_result and validation_result.get("success", False) and validation_result.get("authenticated", False) and validation_result.get("dispensed", False):
+        # Check if authentication was successful (regular dispensing card).
+        # 'dispensed' is a server-side billing flag \u2014 do NOT gate on it.
+        # The machine controls the physical dispense; we only need the server
+        # to confirm the card is valid (success=True) and authenticated (authenticated=True).
+        if validation_result and validation_result.get("success", False) and validation_result.get("authenticated", False):
             # Authentication successful
             print("✅ AES Authentication successful - proceeding to dispensing")
             print(f"   Card: {validation_result.get('cardId')}")
@@ -1374,7 +1375,7 @@ class PaymentMethodPage(Screen):
             
             # Re-enable RFID and return to payment method page
             Clock.schedule_once(lambda dt: self.restart_rfid_after_auth(), 3)
-            Clock.schedule_once(lambda dt: app.show_page('payment_method'), 3)
+            Clock.schedule_once(lambda dt: app.show_payment_method_page(), 3)
     
     def navigate_to_dispensing(self):
         """Navigate directly to dispensing for RFID payment.
@@ -1472,80 +1473,11 @@ class PaymentMethodPage(Screen):
             return False
     
     def navigate_to_machine_empty(self):
-        """Navigate to machine empty page when cups are 0 (only if on payment_method screen)"""
-        if self.manager.current == 'payment_method':
+        """Navigate to machine empty page when cups are 0 (only from home screens)"""
+        if self.manager.current in ('payment_method', 'selection'):
             self.manager.current = 'machine_empty'
         else:
             print(f"Skipping auto-navigation to machine_empty as user has moved to: {self.manager.current}")
-    
-    def start_status_monitoring(self):
-        """Start continuous machine status monitoring"""
-        # Stop any existing timer first
-        self.stop_status_monitoring()
-        
-        # Schedule periodic check every 5 seconds
-        self.status_check_timer = Clock.schedule_interval(
-            lambda dt: self.check_machine_status_background(), 
-            self.status_check_interval
-        )
-        print(f"🔍 Started machine status monitoring (every {self.status_check_interval} seconds)")
-    
-    def stop_status_monitoring(self):
-        """Stop continuous machine status monitoring"""
-        if self.status_check_timer:
-            self.status_check_timer.cancel()
-            self.status_check_timer = None
-            print("🛑 Stopped machine status monitoring")
-    
-    def check_machine_status_background(self):
-        """Check machine status in background thread"""
-        if hasattr(self, '_checking_status') and self._checking_status:
-            return
-        self._checking_status = True
-        threading.Thread(target=self._do_status_check, daemon=True).start()
-    
-    def _do_status_check(self):
-        """Perform machine status check"""
-        from kivy.app import App
-        app = App.get_running_app()
-        
-        try:
-            if hasattr(app, 'api_client') and hasattr(app, 'MACHINE_ID'):
-                # Check machine status
-                status_data = app.api_client.check_machine_status(app.MACHINE_ID)
-                
-                if status_data and status_data.get("success", False):
-                    data = status_data.get("data", {})
-                    machine_status = data.get("status", "offline")
-                    is_online = machine_status.lower() == "online"
-                    
-                    if not is_online:
-                        # Machine went offline - navigate to machine empty page
-                        print("⚠️ Machine went OFFLINE - navigating to machine empty page")
-                        Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0)
-                        return
-                
-                # Also check cups count
-                cups_data = app.api_client.get_remaining_cups(app.MACHINE_ID)
-                if cups_data and cups_data.get("success", False):
-                    cups_count = cups_data.get("cups", 0)
-                    
-                    # Update local count
-                    Clock.schedule_once(lambda dt: app.set_local_cups_count(cups_count))
-                    
-                    if cups_count <= 0:
-                        # Cups ran out - navigate to machine empty page
-                        print("⚠️ Cups ran out (0 remaining) - navigating to machine empty page")
-                        Clock.schedule_once(lambda dt: self.navigate_to_machine_empty(), 0)
-                        return
-                    
-                    # Update display if cups count changed
-                    Clock.schedule_once(lambda dt: self.update_cups_display(cups_count))
-                    
-        except Exception as e:
-            print(f"Status check error: {e}")
-        finally:
-            self._checking_status = False
     
     def show_offline_popup_for_rfid(self):
         """Show offline popup for RFID"""
@@ -1564,9 +1496,17 @@ class PaymentMethodPage(Screen):
         """Called when the screen is displayed"""
         # Check machine status and cups count before showing page
         threading.Thread(target=self.check_machine_availability, daemon=True).start()
-        
+
         # Note: Global status monitoring in main_app.py handles continuous checks
-        
+
+        # Pre-warm the QR cache for 1 cup as soon as the home page is visible.
+        # Users spend 2-5s here before confirming — enough for the Kulhad API to
+        # respond (2-3s typical) so the payment page loads instantly.
+        from kivy.app import App
+        app = App.get_running_app()
+        if hasattr(app, 'trigger_qr_prefetch'):
+            app.trigger_qr_prefetch(1)
+
         # Enable RFID listening
         self.rfid_listening = True
         

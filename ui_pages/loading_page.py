@@ -79,7 +79,7 @@ class LoadingPage(Screen):
         # Check if image exists, otherwise use placeholder
         image_path = os.path.join('assets', 'cupimage.png')
         if os.path.exists(image_path):
-            self.cup_image = Image(source=image_path, size_hint=(None, None), size=(400, 400))
+            self.cup_image = Image(source=image_path, size_hint=(None, None), size=(160, 160))
         else:
             # Create a placeholder widget
             self.cup_image = Widget(size_hint=(None, None), size=(120, 120))

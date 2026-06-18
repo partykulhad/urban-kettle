@@ -37,135 +37,14 @@ from ui_pages.flush_page import FlushPage
 
 class ChaiOrderingApp(App):
 
-    # =========================================================================
-    # Device ID auto-detection (Option B)
-    # =========================================================================
-
-    def _auto_detect_device_id(self, timeout_seconds: int = 30) -> str:
-        """Query the polling server and return the first connected ESP32 device ID.
-        Returns empty string if no device is found within timeout_seconds.
-        """
-        from config import POLLING_SERVER_URL
-        import requests
-
-        print(f"🔍 [Setup] DEVICE_ID is empty — scanning for connected ESP32 "
-              f"(timeout {timeout_seconds}s)...")
-        deadline = time.time() + timeout_seconds
-
-        while time.time() < deadline:
-            try:
-                r = requests.get(f"{POLLING_SERVER_URL}/api/devices", timeout=2)
-                if r.status_code == 200:
-                    devices = r.json().get("devices", [])
-                    if devices:
-                        device_id = devices[0].get("deviceId", "")
-                        if device_id:
-                            print(f"✅ [Setup] ESP32 found: {device_id}")
-                            return device_id
-                        print("⚠️ [Setup] Device entry has no deviceId — waiting...")
-                    else:
-                        print("⏳ [Setup] Polling server running but no ESP32 connected yet...")
-            except Exception as e:
-                print(f"⏳ [Setup] Polling server not ready ({e}) — retrying...")
-            time.sleep(2)
-
-        print("❌ [Setup] Auto-detection timed out — no ESP32 found")
-        return ""
-
-    def _save_device_id_to_config(self, device_id: str) -> None:
-        """Write device_id into the DEVICE_ID line of config.py using regex."""
-        import re
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
-        try:
-            with open(config_path, "r") as f:
-                content = f.read()
-            new_content = re.sub(
-                r'(DEVICE_ID\s*=\s*")[^"]*(")',
-                f'\\g<1>{device_id}\\2',
-                content
-            )
-            with open(config_path, "w") as f:
-                f.write(new_content)
-            print(f"✅ [Setup] config.py updated — DEVICE_ID = \"{device_id}\"")
-        except Exception as e:
-            print(f"❌ [Setup] Could not write DEVICE_ID to config.py: {e}")
-
-    def _auto_detect_and_update_device_id(self, current_id: str) -> None:
-        """Background: detect connected ESP32 and update config.py if ID changed.
-
-        Runs on every startup so a replaced ESP32 board is picked up automatically
-        without any manual config edit.
-        """
-        detected_id = self._auto_detect_device_id(timeout_seconds=60)
-        import config as _cfg
-
-        if not detected_id:
-            if current_id:
-                print(f"⚠️ [Setup] ESP32 not detected within 60s — continuing with existing ID: {current_id}")
-            else:
-                print("❌ [Setup] No ESP32 detected — hardware commands will fail")
-            return
-
-        if detected_id == current_id:
-            print(f"✅ [Setup] ESP32 ID confirmed: {detected_id}")
-            return
-
-        # ID changed — update config.py and in-memory config
-        print(f"🔄 [Setup] ESP32 ID changed: '{current_id}' → '{detected_id}' — updating config.py")
-        self._save_device_id_to_config(detected_id)
-        _cfg.DEVICE_ID = detected_id
-        hardware_monitor.device_id = detected_id
-        print(f"✅ [Setup] config.py updated automatically — no manual edit needed")
-
-    # =========================================================================
-
     def build(self):
         self.title = "Urban Kettle"
 
         # ── Device ID setup ──────────────────────────────────────────────────
-        # DEVICE_ID in config.py is auto-managed — no manual editing needed.
-        #
-        # First boot (DEVICE_ID = ""):  block here and wait for ESP32 to connect
-        #                               so the rest of build() has a valid ID.
-        # Subsequent boots (ID stored): use it immediately (no delay), then
-        #                               check in background and auto-update if
-        #                               the ESP32 board was ever replaced.
+        # DEVICE_ID is set manually in config.py — no auto-detection.
         import config as _cfg
-        if not _cfg.DEVICE_ID:
-            # First-time setup: show a splash screen so the user sees something
-            # while we wait for the ESP32 (up to 30s). build() hasn't returned
-            # yet so the Kivy loop hasn't started — we build a minimal window manually.
-            from kivy.core.window import Window as _Win
-            from kivy.uix.label import Label as _Label
-            from kivy.uix.floatlayout import FloatLayout as _FL
-            splash = _FL()
-            splash.add_widget(_Label(
-                text='Urban Kettle\nConnecting to hardware...',
-                font_size='28sp',
-                bold=True,
-                halign='center',
-                color=(0.714, 0.478, 0.176, 1)
-            ))
-            # Briefly show window so user sees progress
-            _Win.size = (881, 661)
-
-            detected_id = self._auto_detect_device_id(timeout_seconds=30)
-            if detected_id:
-                self._save_device_id_to_config(detected_id)
-                _cfg.DEVICE_ID = detected_id
-                hardware_monitor.device_id = detected_id
-                print(f"✅ [Setup] First-time setup complete — DEVICE_ID = {detected_id}")
-            else:
-                print("❌ [Setup] No ESP32 detected — hardware will not function. "
-                      "Check ESP32 is powered and polling server is running.")
-        else:
-            # Existing ID — use immediately, verify / auto-update in background
-            hardware_monitor.device_id = _cfg.DEVICE_ID
-            print(f"✅ [Setup] Using stored DEVICE_ID: {_cfg.DEVICE_ID}")
-            threading.Thread(
-                target=lambda: self._auto_detect_and_update_device_id(_cfg.DEVICE_ID),
-                daemon=True
-            ).start()
+        hardware_monitor.device_id = _cfg.DEVICE_ID
+        print(f"✅ [Setup] Using DEVICE_ID: {_cfg.DEVICE_ID}")
 
         # Constants
         self.MACHINE_ID = MACHINE_ID
@@ -198,7 +77,8 @@ class ChaiOrderingApp(App):
         # *** Global machine status monitoring ***
         self.global_status_monitor_event = None
         self.global_status_check_interval = 10  # Check every 10 seconds
-        self.previous_machine_state = None  # Track previous state for transition detection
+        self.previous_machine_state = None  # Track previous state for logging
+        self._offline_confirm_count = 0    # consecutive OFFLINE reads — debounce transient blips
         
         # *** Activity and hardware error monitoring ***
         self.activity_monitor_event = None
@@ -207,6 +87,10 @@ class ChaiOrderingApp(App):
         # *** NEW: Cup management variables ***
         self.selected_cups = 1  # Default number of cups
         self.current_cup_number = 1  # Current cup being dispensed
+        self._dispensing_cups = False  # True while a multi-cup order is actively dispensing
+        # Set to cup count when user confirmed order but temp is low — heating page
+        # should generate QR and show payment page when done, not go home.
+        self._pending_cups_after_heating = None
 
         # *** Dispense volume (from Kulhad getMachineData) ***
         self.ml_to_dispense = 100   # Default ml per cup; overridden by API on startup
@@ -218,10 +102,21 @@ class ChaiOrderingApp(App):
         # firmware — 20 s each — and are NOT configurable via the API.
         self.flush_timer_event = None           # Kivy Clock event for the idle flush
         self.flush_time_minutes = 40            # Default; overridden by Kulhad flushTimeMinutes on startup
+        self.flush_duration_seconds = 20        # Seconds the pump runs per flush (fixed in firmware)
         self.scheduled_flush_check_event = None # Kivy Clock: refresh flush_time_minutes every 5 min
 
         # *** Flush-in-progress state (drives flush page UI) ***
         self.flush_in_progress = False          # True while water+tea flush is running
+        self._flush_cancelled = True            # Prevents spurious timer arming at startup
+        self._pending_refill_flush = False      # True when cups refilled — triggers refill flush before going home
+
+        # *** Operating hours (from Kulhad startTime / endTime) ***
+        self._operating_start  = None           # datetime.time — machine open time
+        self._operating_end    = None           # datetime.time — machine close time
+        self._operating_timers = []             # threading.Timer instances (cancelled on stop)
+
+        # *** Water level low (ESP32 health_check → waterLevelLow) ***
+        self._water_level_low_active = False    # True while showing the water-low maintenance page
 
         # --- Strategy 1: Multi-Prefetch State ---
         self._prefetches = {}           # dict: {cup_count: {'data': qr_data, 'image': PIL_img}}
@@ -267,9 +162,9 @@ class ChaiOrderingApp(App):
         self.screen_manager.add_widget(self.heating_page)
         self.screen_manager.add_widget(self.flush_page)
         
-        # Set initial screen to payment method selection
-        self.screen_manager.current = 'payment_method'
-        self._current_page = 'payment_method'  # thread-safe mirror of screen_manager.current
+        # Set initial screen to cup selection (home page)
+        self.screen_manager.current = 'selection'
+        self._current_page = 'selection'  # thread-safe mirror of screen_manager.current
         
         # Setup screensaver monitoring
         self.setup_screensaver_monitoring()
@@ -277,18 +172,25 @@ class ChaiOrderingApp(App):
         # Setup hardware error monitoring
        #self.setup_hardware_error_monitoring()
         
-        # Set exact 7-inch tablet dimensions (7 inches diagonal)
-        # Standard 7-inch tablet: 1024x600 pixels at ~170 PPI
-        # Physical size: 6.1" x 3.6" = 7" diagonal
-        Window.size = (881, 661)
-        Window.minimum_width = 881
-        Window.minimum_height = 661
-        Window.maximum_width = 881
-        Window.maximum_height = 661
-        # Lock to exact 7-inch tablet size
-        Window.resizable = False
-        Window.fullscreen = 'auto'
-        Window.rotation = 180  # Physical screen is mounted upside-down
+        # Window setup — production vs test mode
+        # Set UK_TEST_MODE=1 to run windowed on a desktop for development.
+        import os as _os
+        if _os.environ.get("UK_TEST_MODE"):
+            # Desktop testing: windowed, no rotation, resizable
+            Window.size = (881, 661)
+            Window.resizable = True
+            Window.fullscreen = False
+            Window.rotation = 0
+        else:
+            # Production: lock to 7-inch tablet, fullscreen, upside-down mount
+            Window.size = (881, 661)
+            Window.minimum_width = 881
+            Window.minimum_height = 661
+            Window.maximum_width = 881
+            Window.maximum_height = 661
+            Window.resizable = False
+            Window.fullscreen = 'auto'
+            Window.rotation = 180  # Physical screen is mounted upside-down
         # Start hardware monitoring service
         hardware_monitor.start()
         
@@ -303,10 +205,20 @@ class ChaiOrderingApp(App):
             if self.rfid_auth_handler.reader_active:
                 print("✅ RFID Auth Handler initialized successfully at startup")
             else:
-                print("⚠️ RFID reader not active at startup - will retry when entering payment page")
+                print("⚠️ RFID reader not active in PC/SC mode - HID keyboard fallback active")
         except Exception as e:
             print(f"❌ Failed to initialize RFID Auth Handler at startup: {e}")
             self.rfid_auth_handler = None
+
+        # HID keyboard fallback — catches card numbers typed by readers
+        # configured in USB HID mode (outputs decimal card number as keystrokes)
+        try:
+            from utils.rfid_reader import rfid_reader as _hid_reader
+            _hid_reader.start_listening(self._on_hid_rfid_card)
+            self._hid_rfid_reader = _hid_reader
+            print("🏷️ HID RFID keyboard listener started")
+        except Exception as e:
+            print(f"⚠️ HID RFID listener failed to start: {e}")
         
         # Warm up API connections (background)
         self.api_client.warmup_apis()
@@ -330,9 +242,13 @@ class ChaiOrderingApp(App):
 
         # Start global machine status monitoring
         self.start_global_status_monitoring()
+
+        # Start always-on RFID monitor (handles pages without per-page polling)
+        Clock.schedule_once(lambda dt: self._start_global_rfid_monitor(), 3)
         
-        # Start scheduled flush monitor — polls Kulhad API every 5 min and triggers
-        # water + tea flush when a scheduled time arrives or interval elapses.
+        # flushTimeMinutes/mlToDispense/operatingHours load once at boot (line above),
+        # then every 1 min via this monitor — needed so manual online/offline toggles
+        # in Kulhad (and any other config change) are picked up without restarting.
         self.start_scheduled_flush_monitor()
 
         # Check if tea is heating up (schedule check after 1.5 seconds to allow hardware monitor to start)
@@ -373,12 +289,20 @@ class ChaiOrderingApp(App):
         etc.) goes through here, so a single guard is enough to block orders while
         the machine is cleaning itself.
         """
+        self._pending_cups_after_heating = None  # safety reset
+
+        # Cups were just refilled — run refill flush before going to selection.
+        if getattr(self, '_pending_refill_flush', False):
+            self._pending_refill_flush = False
+            Clock.schedule_once(lambda dt: self._trigger_refill_flush(), 0)
+            return
+
         if self.flush_in_progress:
             self.flush_page.show_waiting()
             self.show_page('flush')
             return
 
-        self.show_page('payment_method')
+        self.show_page('selection')
         if fetch_cups:
             self.fetch_and_store_cups_count()
     
@@ -394,9 +318,13 @@ class ChaiOrderingApp(App):
         # New order started — cancel any pending auto flush
         self.cancel_auto_flush()
 
+        # Clear any QR ID from a previous payment cycle so the duplicate-delivery
+        # guard in update_payment_page() doesn't reject the incoming QR.
+        self.current_qr_code_id = ""
+
         self.set_selected_cups(number_of_cups)
         self.show_loading_page()
-        self.loading_timeout_event = Clock.schedule_once(self.on_loading_timeout, 15)
+        self.loading_timeout_event = Clock.schedule_once(self.on_loading_timeout, 30)
         
         # --- STRATEGY 1: Check Multi-Prefetch Cache ---
         # needs_fallback is determined INSIDE the lock so no other thread can race
@@ -483,7 +411,13 @@ class ChaiOrderingApp(App):
                 return
 
             if qr_data and qr_data.get("imageContent"):
-                img = QRUtils.generate_qr_from_content(qr_data["imageContent"])
+                pil_img = QRUtils.generate_qr_from_content(qr_data["imageContent"])
+                # Pre-encode to PNG bytes here in the background thread so the
+                # main thread only needs CoreImage(buf) — no PIL.save() on UI thread.
+                import io as _io
+                buf = _io.BytesIO()
+                pil_img.save(buf, format='PNG')
+                img = buf  # pass BytesIO to cache; update_qr_code() accepts both
                 print(f"✅ MULTI-PREFETCH: {number_of_cups} cups is READY in cache.")
 
                 # User is on loading screen waiting for this exact count — deliver now
@@ -534,14 +468,21 @@ class ChaiOrderingApp(App):
                 ).start()
 
     def trigger_early_prefetch(self):
-        """Strategic batch prefetch for 1, 2, and 3 cups to mask API latency"""
-        for count in [1, 2, 3]:
+        """Background QR prefetch for every achievable cup count (max 3).
+        Only spawns workers for counts ≤ current stock so we never create
+        Razorpay QRs that can never be used."""
+        cups = self.local_cups_count
+        max_cups = min(cups, 3) if cups is not None else 3
+        if max_cups < 1:
+            return
+        print(f"🚀 PREFETCH: Starting background QR generation for 1–{max_cups} cups")
+        for count in range(1, max_cups + 1):
             self.trigger_qr_prefetch(count)
     
     def on_loading_timeout(self, dt):
         """Called if loading page takes too long - prevents hanging"""
         if self.screen_manager.current == 'loading':
-            print("⚠️ Loading page timeout (15s) - QR generation took too long")
+            print("⚠️ Loading page timeout (30s) - QR generation took too long")
             self.show_error_fallback()
     
     def cancel_loading_timeout(self):
@@ -584,8 +525,9 @@ class ChaiOrderingApp(App):
         print(f"Selected {num_cups} cups for dispensing")
     
     def start_dispensing_process(self):
-        """Start the dispensing process for multiple cups"""
+        """Start the dispensing process for multiple cups."""
         self.current_cup_number = 1
+        self._dispensing_cups = True  # guard: block machine_empty navigation mid-order
         print(f"Starting dispensing process for {self.selected_cups} cups")
         self.show_place_cup_page()
     
@@ -624,30 +566,40 @@ class ChaiOrderingApp(App):
         else:
             # All cups completed
             print("All cups completed! Showing thank you page")
+            self._dispensing_cups = False  # order done — machine_empty can show now if count=0
             # Refresh cups count after all dispensing is complete
             self.refresh_cups_count()
             self.show_thank_you_page()
+            # Navigate to machine_empty if cups hit the empty threshold during the last dispense
+            from config import MACHINE_EMPTY_THRESHOLD
+            if self.local_cups_count is not None and self.local_cups_count <= MACHINE_EMPTY_THRESHOLD:
+                def _show_empty_after_thankyou(dt):
+                    self.machine_empty_page.set_mode('empty')
+                    self.show_page('machine_empty')
+                Clock.schedule_once(_show_empty_after_thankyou, 3.0)
             # Schedule auto water flush if no new order within flushTimeMinutes
             self.schedule_auto_flush()
     
     def refresh_cups_count(self):
-        """Refresh the cups count on payment method page"""
+        """Refresh the cups count on home pages"""
         if hasattr(self.payment_method_page, 'refresh_cups_count'):
             self.payment_method_page.refresh_cups_count()
+        if hasattr(self.selection_page, 'refresh_cups_count'):
+            self.selection_page.refresh_cups_count()
 
     # *** AUTO FLUSH METHODS ***
     def schedule_auto_flush(self):
-        """After a dispense, fetch the latest flushTimeMinutes from Kulhad then
-        arm the idle-flush timer.  If a new order arrives before the timer fires,
-        cancel_auto_flush() resets everything.
+        """After a dispense, arm the idle-flush timer.  If a new order arrives
+        before the timer fires, cancel_auto_flush() resets everything.
         """
-        self.cancel_auto_flush()
+        self.cancel_auto_flush()       # cancel any previous timer first
+        self._flush_cancelled = False  # then allow the new timer to be armed
         threading.Thread(target=self._fetch_flush_timing_and_schedule, daemon=True).start()
 
     def _refresh_machine_config_cache(self):
         """Fetch flushTimeMinutes and mlToDispense from Kulhad and update the local cache.
 
-        Called once at startup and every 5 minutes by the scheduled monitor.
+        Called once at startup and every 1 minute by the scheduled monitor.
         If either value changed since the last refresh, the ESP32 is re-synced
         automatically.  All other code (dispense, flush arming) reads from
         self.flush_time_minutes / self.ml_to_dispense — no extra API calls.
@@ -703,6 +655,54 @@ class ChaiOrderingApp(App):
                             daemon=True
                         ).start()
 
+            # ── Operating hours (startTime / endTime) ────────────────────────
+            # Sourced from Kulhad only — no local fallback, so a missing/cleared
+            # value on the machine record simply leaves the scheduler un-armed
+            # rather than silently running a stale test window.
+            start_str = (data.get("startTime") or data.get("openTime")
+                         or data.get("start_time") or data.get("StartTime"))
+            end_str   = (data.get("endTime")   or data.get("closeTime")
+                         or data.get("end_time") or data.get("EndTime"))
+
+            if start_str and end_str:
+                new_start = self._parse_operating_time(str(start_str))
+                new_end   = self._parse_operating_time(str(end_str))
+                if new_start and new_end:
+                    hours_changed = (new_start != self._operating_start
+                                     or new_end != self._operating_end
+                                     or not self._operating_timers)
+                    if hours_changed:
+                        updated.append(f"operatingHours={start_str}–{end_str}")
+                        Clock.schedule_once(
+                            lambda dt, s=str(start_str), e=str(end_str):
+                                self._schedule_operating_hours(s, e), 0
+                        )
+            else:
+                print("⚠️ [Config] No startTime/endTime in Kulhad — "
+                      "operating hours scheduler not active")
+
+            # ── Kulhad-commanded online/offline (manual dashboard toggle) ────
+            # previous_machine_state reflects the Pi's own last-known real-world
+            # state (from ESP32 health checks). If Kulhad's status disagrees with
+            # it, an admin manually toggled the switch — apply that command.
+            # Skipped on the very first call (previous_machine_state is still None
+            # at startup, before the global status check has run even once).
+            kulhad_status = str(data.get("status") or "").strip().lower()
+            current_state = getattr(self, 'previous_machine_state', None)
+            if kulhad_status in ("online", "offline") and current_state is not None \
+                    and kulhad_status != current_state:
+                print(f"📡 [Kulhad] Manual status change detected: {current_state} → {kulhad_status}")
+                updated.append(f"kulhadCommand={kulhad_status}")
+                if kulhad_status == "offline":
+                    threading.Thread(target=self._operating_go_offline, daemon=True).start()
+                else:
+                    self.send_machine_state_to_esp32("ONLINE", None)
+                    threading.Thread(
+                        target=lambda: self.api_client.report_machine_status(self.MACHINE_ID, 'online'),
+                        daemon=True
+                    ).start()
+                    Clock.schedule_once(lambda dt: self.check_heating_on_startup(), 0)
+
             if updated:
                 print(f"🔄 [Config] Cache updated from Kulhad: {', '.join(updated)}")
             else:
@@ -711,6 +711,182 @@ class ChaiOrderingApp(App):
 
         except Exception as e:
             print(f"❌ [Config] Cache refresh error: {e}")
+
+    # =========================================================================
+    # Operating hours — auto OFFLINE at close, auto ONLINE 40 min before open
+    # =========================================================================
+
+    @staticmethod
+    def _parse_operating_time(time_str):
+        """Parse Kulhad time strings → datetime.time or None.
+        Kulhad stores times from an HTML <input type='time'> which always
+        produces HH:MM 24-hour format (e.g. '09:00', '22:00').
+        AM/PM variants are also accepted as a fallback.
+        """
+        if not time_str:
+            return None
+        from datetime import datetime as _dt
+        for fmt in ('%H:%M', '%H:%M:%S', '%I:%M %p', '%I:%M%p', '%I %p'):
+            try:
+                return _dt.strptime(str(time_str).strip(), fmt).time()
+            except ValueError:
+                continue
+        print(f"⚠️ [OperatingHours] Cannot parse time: '{time_str}'")
+        return None
+
+    def _schedule_operating_hours(self, start_str, end_str):
+        """Schedule daily close (OFFLINE at end_str) and pre-start (ONLINE 40 min before start_str).
+        Also immediately goes offline if the app starts inside a closed window.
+        Called on the Kivy main thread so show_page() is safe to call.
+        """
+        from datetime import datetime as _dt, timedelta as _td
+
+        start_t = self._parse_operating_time(start_str)
+        end_t   = self._parse_operating_time(end_str)
+        if not start_t or not end_t:
+            print(f"⚠️ [OperatingHours] Invalid times — skipping scheduler")
+            return
+
+        # Cancel previous timers before rescheduling
+        for t in self._operating_timers:
+            t.cancel()
+        self._operating_timers.clear()
+
+        self._operating_start = start_t
+        self._operating_end   = end_t
+        PRE_MINUTES = 40
+
+        now       = _dt.now()
+        now_t     = now.time()
+        prestart_t = (_dt.combine(now.date(), start_t) - _td(minutes=PRE_MINUTES)).time()
+
+        print(f"🕐 [OperatingHours] Open {start_t.strftime('%I:%M %p')} → "
+              f"Close {end_t.strftime('%I:%M %p')} | "
+              f"Pre-start ONLINE at {prestart_t.strftime('%I:%M %p')}")
+
+        # ── Are we currently in the closed window? ──────────────────────────
+        # Open window: prestart_t … (end_t + 30 min grace)
+        POST_MINUTES = 30
+        offline_t = (_dt.combine(now.date(), end_t) + _td(minutes=POST_MINUTES)).time()
+        if prestart_t < offline_t:
+            in_open = prestart_t <= now_t < offline_t
+        else:  # window crosses midnight
+            in_open = now_t >= prestart_t or now_t < offline_t
+
+        if not in_open and self.previous_machine_state != "offline":
+            print("🔴 [OperatingHours] App started inside closed window — going offline now")
+            threading.Thread(target=self._operating_go_offline, daemon=True).start()
+
+        # ── Schedule end-of-day OFFLINE trigger ─────────────────────────────
+        # OFFLINE fires 30 min AFTER end_t (grace window for in-flight customers).
+        POST_MINUTES = 30
+        end_dt = _dt.combine(now.date(), end_t) + _td(minutes=POST_MINUTES)
+        if end_dt <= now:
+            end_dt += _td(days=1)
+        t_end = threading.Timer((end_dt - now).total_seconds(), self._on_operating_end)
+        t_end.daemon = True
+        t_end.start()
+        self._operating_timers.append(t_end)
+        print(f"⏰ [OperatingHours] OFFLINE at {end_dt.strftime('%Y-%m-%d %I:%M %p')} "
+              f"(end_time + {POST_MINUTES} min grace, in {(end_dt - now).total_seconds() / 3600:.1f}h)")
+
+        # ── Schedule pre-start ONLINE trigger ───────────────────────────────
+        prestart_dt = _dt.combine(now.date(), start_t) - _td(minutes=PRE_MINUTES)
+        if prestart_dt <= now:
+            prestart_dt += _td(days=1)
+        t_pre = threading.Timer((prestart_dt - now).total_seconds(), self._on_operating_prestart)
+        t_pre.daemon = True
+        t_pre.start()
+        self._operating_timers.append(t_pre)
+        print(f"⏰ [OperatingHours] ONLINE cmd at {prestart_dt.strftime('%Y-%m-%d %I:%M %p')} "
+              f"(in {(prestart_dt - now).total_seconds() / 3600:.1f}h)")
+
+    def _operating_go_offline(self):
+        """Send OFFLINE to ESP32 and switch UI to machine_empty (background-safe)."""
+        self.send_machine_state_to_esp32("OFFLINE", "operating_hours")
+        try:
+            self.api_client.report_machine_status(self.MACHINE_ID, 'offline')
+        except Exception:
+            pass
+        def _ui(dt):
+            self.machine_empty_page.set_mode('offline')
+            self.show_page('machine_empty')
+            self.previous_machine_state = "offline"
+            print("🔴 [OperatingHours] UI → machine_empty (closed hours)")
+        Clock.schedule_once(_ui, 0)
+
+    # *** WATER LEVEL LOW (ESP32 health_check → waterLevelLow) ***
+
+    def show_water_level_low(self):
+        """ESP32 reported waterLevelLow=True — show maintenance page and alert Kulhad."""
+        self.machine_empty_page.set_mode('water_low')
+        self.show_page('machine_empty')
+        threading.Thread(
+            target=lambda: self.api_client.report_water_level(self.MACHINE_ID, True),
+            daemon=True
+        ).start()
+
+    def clear_water_level_low(self):
+        """waterLevelLow cleared (tank refilled) — return to selection and clear Kulhad's flag."""
+        self.show_payment_method_page(fetch_cups=True)
+        threading.Thread(
+            target=lambda: self.api_client.report_water_level(self.MACHINE_ID, False),
+            daemon=True
+        ).start()
+
+    def _on_operating_end(self):
+        """Fires at closing time every day — sends OFFLINE and reschedules for tomorrow.
+        Runs on a threading.Timer thread, so the actual offline decision is handed
+        to the main thread (Kivy properties like screen_manager.current aren't
+        thread-safe to read from here).
+        """
+        print("🔴 [OperatingHours] Closing time reached — checking before sending OFFLINE")
+        Clock.schedule_once(self._operating_end_check, 0)
+        # Reschedule 1 second later so "now" is clearly past the trigger point
+        if self._operating_start and self._operating_end:
+            Clock.schedule_once(
+                lambda dt: self._schedule_operating_hours(
+                    self._operating_start.strftime('%I:%M %p'),
+                    self._operating_end.strftime('%I:%M %p')
+                ), 1
+            )
+
+    def _operating_end_check(self, dt=None):
+        """Main-thread check: defer going offline if a customer is mid-transaction,
+        retrying every 30s instead of interrupting them — mirrors the skip_pages
+        list in check_global_machine_status. These pages are all bounded by their
+        own timeouts (payment QR ~10min, place_cup auto-dispense 30s, etc.), so this
+        cannot defer forever.
+        """
+        critical_pages = ['place_cup', 'dispensing', 'payment', 'loading', 'rfid_auth']
+        current = self.screen_manager.current
+        if current in critical_pages:
+            print(f"🟡 [OperatingHours] Closing deferred — customer mid-transaction ({current}), retrying in 30s")
+            Clock.schedule_once(self._operating_end_check, 30)
+            return
+        self._operating_go_offline()
+
+    def _on_operating_prestart(self):
+        """Fires 40 min before opening — sends ONLINE so ESP32 starts heating.
+        The machine_empty page's 3-second recovery timer will detect the ONLINE
+        state and call check_heating_on_startup(), which navigates to the heating
+        page. Tea will be ready by the time the machine officially opens.
+        """
+        print("🟢 [OperatingHours] Pre-start — sending ONLINE (40 min before open)")
+        self.send_machine_state_to_esp32("ONLINE", None)
+        threading.Thread(
+            target=lambda: self.api_client.report_machine_status(self.MACHINE_ID, 'online'),
+            daemon=True
+        ).start()
+        print("🟢 [OperatingHours] ESP32 ONLINE sent — machine will heat up before opening")
+        # Reschedule for tomorrow
+        if self._operating_start and self._operating_end:
+            Clock.schedule_once(
+                lambda dt: self._schedule_operating_hours(
+                    self._operating_start.strftime('%I:%M %p'),
+                    self._operating_end.strftime('%I:%M %p')
+                ), 1
+            )
 
     def _fetch_flush_timing_and_schedule(self):
         """Arm the flush idle timer using flushTimeMinutes from Kulhad.
@@ -722,12 +898,16 @@ class ChaiOrderingApp(App):
 
     def _arm_flush_timer(self, delay_seconds):
         """Arm the Clock timer (main thread only)."""
+        if getattr(self, '_flush_cancelled', False):
+            print("💧 [Flush] Arming aborted — flush was cancelled")
+            return
         if self.flush_timer_event is not None:
-            return  # new order already cancelled this while we were fetching
+            return  # already armed
         self.flush_timer_event = Clock.schedule_once(self._trigger_auto_flush, delay_seconds)
 
     def cancel_auto_flush(self):
         """Cancel a pending auto flush (called when a new order starts)."""
+        self._flush_cancelled = True  # Tell background arming to abort
         if self.flush_timer_event:
             self.flush_timer_event.cancel()
             self.flush_timer_event = None
@@ -751,26 +931,42 @@ class ChaiOrderingApp(App):
         threading.Thread(target=self._run_auto_flush, daemon=True).start()
 
     def _run_auto_flush(self):
-        """Execute maintenance flush — waits for ESP32 success on each step."""
+        """Execute maintenance flush: water → 10 s wait → tea → done."""
+        import time as _time
         from config import DEVICE_ID
         try:
-            # ── Step 1: Water flush — wait for ESP32 success ─────────────────
+            # ── Step 1: Water flush ───────────────────────────────────────────
             print(f"💧 [Flush] Sending water flush → {DEVICE_ID}...")
             Clock.schedule_once(lambda dt: self.flush_page.set_phase('water'), 0)
             water_result = self.api_client.water_flush(DEVICE_ID)
 
             if water_result:
-                print(f"✅ [Flush] Water flush complete: {water_result}")
+                print("✅ [Flush] Water flush complete")
             else:
-                print("❌ [Flush] Water flush command failed — continuing to tea flush")
+                print("❌ [Flush] Water flush command failed — skipping tea flush")
+                return
 
-            # ── Step 2: Tea flush — wait for ESP32 success ──────────────────
+            # ── 10 s pause (show live countdown on flush page) ───────────────
+            print("⏳ [Flush] Waiting 10 s before tea flush...")
+            Clock.schedule_once(
+                lambda dt: self.flush_page.start_wait_countdown(10), 0
+            )
+            _time.sleep(10)
+
+            # ── Step 2: Tea flush ─────────────────────────────────────────────
             print(f"🍵 [Flush] Sending tea flush → {DEVICE_ID}...")
             Clock.schedule_once(lambda dt: self.flush_page.set_phase('tea'), 0)
             tea_result = self.api_client.tea_flush(DEVICE_ID)
 
             if tea_result:
-                print(f"✅ [Flush] Tea flush complete: {tea_result}")
+                resp = tea_result if isinstance(tea_result, dict) else {}
+                nested = resp.get('response', {})
+                status = nested.get('status', 'unknown')
+                code   = nested.get('statusCode', 0)
+                if status == 'success' or code == 200:
+                    print("✅ [Flush] Tea flush succeeded")
+                else:
+                    print(f"⚠️ [Flush] Tea flush returned non-success: {tea_result}")
             else:
                 print("❌ [Flush] Tea flush command failed — check polling server")
 
@@ -784,18 +980,107 @@ class ChaiOrderingApp(App):
                 lambda dt: self.show_payment_method_page(fetch_cups=True), 1
             )
 
+    # *** REFILL FLUSH (triggered when cups restocked from 0) ***
+
+    def handle_cups_refill(self):
+        """Called when machine_empty detects cups refilled (0 → N).
+        Sets the refill-flush pending flag then runs temp check.
+        If temp is already ready, show_payment_method_page intercepts and starts the flush.
+        If temp is low, the heating page shows first; once hot, the same interception happens.
+        """
+        print("🔄 [RefillFlush] Cups restocked — setting pending refill flush flag")
+        self._pending_refill_flush = True
+        self.check_heating_on_startup()
+
+    def _trigger_refill_flush(self):
+        """Navigate to flush page and launch refill flush thread.
+        Guard: if another flush (e.g. the idle auto-flush, armed right after the
+        last dispense — which is exactly when cups hit 0) is already running,
+        defer and retry shortly instead of dropping the refill flush entirely.
+        Both flush paths reset flush_in_progress in a finally block, so this
+        always resolves within one flush cycle (~20-30s), never indefinitely.
+        """
+        if getattr(self, 'flush_in_progress', False):
+            print("⚠️ [RefillFlush] Another flush already in progress — deferring, retrying in 5s")
+            self._pending_refill_flush = True  # don't lose the request
+            # A flush IS actively running right now — show the flush page during
+            # the wait too, instead of leaving the user looking at machine_empty
+            # while the pump is audibly running.
+            self.flush_page.set_note('Waiting for current flush to finish...')
+            self.flush_page.show_waiting()
+            self.show_page('flush')
+            Clock.schedule_once(lambda dt: self._trigger_refill_flush(), 5)
+            return
+
+        # Cancel any pending (not-yet-fired) idle-flush timer — refill flush takes priority.
+        self.cancel_auto_flush()
+
+        self.flush_in_progress = True
+        self.flush_page.set_note('Refill flush: Step 1/3')
+        self.flush_page.show_waiting()
+        self.show_page('flush')
+        print("💧 [RefillFlush] Launching water × 2 → tea flush sequence...")
+        threading.Thread(target=self._run_refill_flush, daemon=True).start()
+
+    def _run_refill_flush(self):
+        """Execute refill flush: water → 10 s → water → 10 s → tea → done."""
+        import time as _time
+        from config import DEVICE_ID
+        try:
+            # ── Step 1/3: First water flush ──────────────────────────────────
+            print("💧 [RefillFlush] Step 1/3 — water flush...")
+            Clock.schedule_once(lambda dt: self.flush_page.set_phase('water'), 0)
+            Clock.schedule_once(lambda dt: self.flush_page.set_note('Refill flush: Step 1/3'), 0)
+            w1 = self.api_client.water_flush(DEVICE_ID)
+            if not w1:
+                print("❌ [RefillFlush] Step 1 water flush failed — aborting")
+                return
+            print("✅ [RefillFlush] Step 1 done — waiting 10 s")
+            Clock.schedule_once(lambda dt: self.flush_page.start_wait_countdown(10), 0)
+            _time.sleep(10)
+
+            # ── Step 2/3: Second water flush ─────────────────────────────────
+            print("💧 [RefillFlush] Step 2/3 — water flush (2nd)...")
+            Clock.schedule_once(lambda dt: self.flush_page.set_phase('water'), 0)
+            Clock.schedule_once(lambda dt: self.flush_page.set_note('Refill flush: Step 2/3'), 0)
+            w2 = self.api_client.water_flush(DEVICE_ID)
+            if not w2:
+                print("❌ [RefillFlush] Step 2 water flush failed — aborting")
+                return
+            print("✅ [RefillFlush] Step 2 done — waiting 10 s")
+            Clock.schedule_once(lambda dt: self.flush_page.start_wait_countdown(10), 0)
+            _time.sleep(10)
+
+            # ── Step 3/3: Tea flush ───────────────────────────────────────────
+            print("🍵 [RefillFlush] Step 3/3 — tea flush...")
+            Clock.schedule_once(lambda dt: self.flush_page.set_phase('tea'), 0)
+            Clock.schedule_once(lambda dt: self.flush_page.set_note('Refill flush: Step 3/3'), 0)
+            t1 = self.api_client.tea_flush(DEVICE_ID)
+            if t1:
+                print("✅ [RefillFlush] Tea flush complete")
+            else:
+                print("❌ [RefillFlush] Tea flush failed — continuing to selection anyway")
+
+        except Exception as e:
+            print(f"❌ [RefillFlush] Error: {e}")
+        finally:
+            self.flush_in_progress = False
+            Clock.schedule_once(lambda dt: self.flush_page.set_phase('done'), 0)
+            Clock.schedule_once(lambda dt: self.flush_page.set_note(''), 0)
+            print("✅ [RefillFlush] Complete — going to selection")
+            Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 1)
+
     # *** SCHEDULED FLUSH MONITOR (Kulhad API-driven) ***
 
     def start_scheduled_flush_monitor(self):
-        """Start a 5-minute periodic check that polls the Kulhad API for the flush
-        schedule and triggers water + tea flush when a configured time arrives.
+        """Start a periodic check that polls the Kulhad API for the flush schedule,
+        operating hours, and manual online/offline commands, applying any changes.
         """
         self.stop_scheduled_flush_monitor()
-        # Run the first check after 60 s (let the app finish startup first)
         self.scheduled_flush_check_event = Clock.schedule_interval(
-            self._check_scheduled_flush, 300  # every 5 minutes
+            self._check_scheduled_flush, 60  # every 1 minute — keeps manual Kulhad toggles responsive
         )
-        print("🕐 Scheduled flush monitor started (check every 5 min)")
+        print("🕐 Scheduled flush monitor started (check every 1 min)")
 
     def stop_scheduled_flush_monitor(self):
         """Stop the scheduled flush monitor."""
@@ -805,15 +1090,24 @@ class ChaiOrderingApp(App):
             print("🛑 Scheduled flush monitor stopped")
 
     def _check_scheduled_flush(self, dt):
-        """Kivy Clock callback — offload the actual check to a background thread."""
+        """Kivy Clock callback — offload the actual check to a background thread.
+        Skips if the previous check is still running (e.g. Kulhad responding slowly)
+        so overlapping requests never run concurrently.
+        """
+        if getattr(self, '_scheduled_flush_check_running', False):
+            return
+        self._scheduled_flush_check_running = True
         threading.Thread(target=self._do_scheduled_flush_check, daemon=True).start()
 
     def _do_scheduled_flush_check(self):
-        """Every 5 minutes: refresh both flushTimeMinutes and mlToDispense from Kulhad.
-        Uses the unified cache refresh so any Kulhad change is picked up automatically
-        and the ESP32 is re-synced if mlToDispense changed.
+        """Every 1 minute: refresh flushTimeMinutes, mlToDispense, operating hours, and
+        the manual online/offline command from Kulhad. Uses the unified cache refresh so
+        any Kulhad change is picked up automatically and the ESP32 is re-synced if needed.
         """
-        self._refresh_machine_config_cache()
+        try:
+            self._refresh_machine_config_cache()
+        finally:
+            self._scheduled_flush_check_running = False
 
     # *** LOCAL CUPS COUNTER METHODS ***
     def get_local_cups_count(self):
@@ -821,49 +1115,92 @@ class ChaiOrderingApp(App):
         return self.local_cups_count if self.local_cups_count is not None else 0
     
     def set_local_cups_count(self, count):
-        """Set the local cups count and update UI"""
+        """Set the local cups count and update UI.
+
+        This is the single place cups land after any fresh fetch (startup, page
+        entry, screensaver wake, refill checks) — so it's also the right place to
+        redirect to machine_empty on 0, instead of only catching it reactively
+        when the user clicks Proceed on the selection page.
+        """
         self.local_cups_count = count
         self.cups_count_initialized = True
         print(f"📦 Local cups count set to: {count}")
-        
-        # Check if cups are exactly 5 and alert hasn't been sent
+
+        # Check if cups are at the canister-low alert threshold and alert hasn't been sent
+        from config import CANISTER_ALERT_THRESHOLD, MACHINE_EMPTY_THRESHOLD
         print(f"🔍 DEBUG: count={count}, canister_alert_sent={self.canister_alert_sent}")
-        if count == 5 and not self.canister_alert_sent:
-            print(f"🔔 Cups are at 5! Sending canister alert...")
+        if count == CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
+            print(f"🔔 Cups are at {CANISTER_ALERT_THRESHOLD}! Sending canister alert...")
             self.send_canister_alert()
             self.canister_alert_sent = True
-        # Reset alert flag if cups go above 5 (refilled)
-        elif count > 5:
+        # Reset alert flag if cups go above the threshold (refilled)
+        elif count > CANISTER_ALERT_THRESHOLD:
             if self.canister_alert_sent:
                 print(f"🔄 Cups refilled to {count}, resetting alert flag")
             self.canister_alert_sent = False
-        
-        # Update payment method page display
+
+        # Update cups display on both pages
         if hasattr(self.payment_method_page, 'update_cups_display'):
             Clock.schedule_once(lambda dt: self.payment_method_page.update_cups_display(count))
-    
+        if hasattr(self.selection_page, 'update_cups_display'):
+            Clock.schedule_once(lambda dt: self.selection_page.update_cups_display(count))
+
+        # Redirect straight to machine_empty if we're sitting on the selection
+        # page at or below the empty threshold — don't wait for the user to
+        # click Proceed to find out. Skip during critical in-flight pages and
+        # while machine_empty already owns the screen (avoids restarting its
+        # animation/timers redundantly).
+        in_flight_pages = ('place_cup', 'dispensing', 'payment', 'loading',
+                            'heating', 'rfid_auth', 'thank_you', 'flush')
+        current_page = self.screen_manager.current
+        if (count <= MACHINE_EMPTY_THRESHOLD
+                and not getattr(self, '_dispensing_cups', False)
+                and current_page not in in_flight_pages
+                and current_page != 'machine_empty'):
+            print(f"📦 set_local_cups_count: {count} cups (<= {MACHINE_EMPTY_THRESHOLD}) on a live page — navigating to machine_empty")
+            def _show_empty(dt):
+                self.machine_empty_page.set_mode('empty')
+                self.show_page('machine_empty')
+            Clock.schedule_once(_show_empty, 0)
+
     def decrement_local_cups(self, num_cups=1):
         """Decrement local cups count (when dispensing)"""
         if self.local_cups_count is not None:
+            from config import CANISTER_ALERT_THRESHOLD, MACHINE_EMPTY_THRESHOLD
             self.local_cups_count = max(0, self.local_cups_count - num_cups)
-            print(f"📦 Local cups decremented by {num_cups}, new count: {self.local_cups_count}")
-            
-            # Check if cups reached exactly 5 and alert hasn't been sent
-            print(f"🔍 DEBUG: after decrement count={self.local_cups_count}, canister_alert_sent={self.canister_alert_sent}")
-            if self.local_cups_count == 5 and not self.canister_alert_sent:
-                print(f"🔔 Cups reached 5 after dispensing! Sending canister alert...")
+            count = self.local_cups_count  # snapshot for lambdas — avoids stale-reference bug
+            print(f"📦 Local cups decremented by {num_cups}, new count: {count}")
+
+            # Only navigate to machine_empty if no order is actively in progress.
+            # During a multi-cup order the count can legitimately hit the empty
+            # threshold mid-dispense (user ordered the last N cups). Interrupting
+            # that with machine_empty would cut off the dispensing animation and
+            # skip the thank-you page.
+            if count <= MACHINE_EMPTY_THRESHOLD and not getattr(self, '_dispensing_cups', False):
+                print(f"📦 Cups at {count} (<= {MACHINE_EMPTY_THRESHOLD}, no active order) — navigating to machine_empty")
+                def _show_empty(dt):
+                    self.machine_empty_page.set_mode('empty')
+                    self.show_page('machine_empty')
+                Clock.schedule_once(_show_empty, 2.0)  # small delay so thank_you can show first
+
+            # Check if cups reached the canister-low alert threshold and alert hasn't been sent
+            print(f"🔍 DEBUG: after decrement count={count}, canister_alert_sent={self.canister_alert_sent}")
+            if count == CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
+                print(f"🔔 Cups reached {CANISTER_ALERT_THRESHOLD} after dispensing! Sending canister alert...")
                 self.send_canister_alert()
                 self.canister_alert_sent = True
-            
-            # Reset alert flag if cups go above 5 (refilled)
-            elif self.local_cups_count > 5:
+
+            # Reset alert flag if cups go above the threshold (refilled)
+            elif count > CANISTER_ALERT_THRESHOLD:
                 if self.canister_alert_sent:
-                    print(f"🔄 Cups refilled to {self.local_cups_count} after dispensing, resetting alert flag")
+                    print(f"🔄 Cups refilled to {count} after dispensing, resetting alert flag")
                 self.canister_alert_sent = False
-            
-            # Update payment method page display
+
+            # Update cups display on both pages (use snapshot to avoid stale reference)
             if hasattr(self.payment_method_page, 'update_cups_display'):
-                Clock.schedule_once(lambda dt: self.payment_method_page.update_cups_display(self.local_cups_count))
+                Clock.schedule_once(lambda dt, c=count: self.payment_method_page.update_cups_display(c))
+            if hasattr(self.selection_page, 'update_cups_display'):
+                Clock.schedule_once(lambda dt, c=count: self.selection_page.update_cups_display(c))
         else:
             print("⚠️ Cannot decrement cups - local count not initialized")
     
@@ -879,8 +1216,9 @@ class ChaiOrderingApp(App):
                     Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
                     print(f"✅ Fetched and stored cups count: {cups_count}")
                     
-                    # Reset alert flag if cups are refilled (> 5)
-                    if cups_count > 5:
+                    # Reset alert flag if cups are refilled (> threshold)
+                    from config import CANISTER_ALERT_THRESHOLD
+                    if cups_count > CANISTER_ALERT_THRESHOLD:
                         self.canister_alert_sent = False
                 else:
                     print("❌ Failed to fetch cups count from API")
@@ -916,17 +1254,40 @@ class ChaiOrderingApp(App):
         """
         print(f"⚠️ [Dispense] ESP32 error code: {status_code}")
         if status_code == 700:
-            # Water temperature too low — show heating page
+            # Water temperature too low — show heating page with fresh temp from cache
             print("🔥 [Dispense] Temperature low (700) — redirecting to heating page")
-            temp = hardware_monitor.get_pt100_temperature()
+            temp = hardware_monitor._fetch_cached_temperature()
             Clock.schedule_once(lambda dt: self.show_heating_page(temp), 0)
         elif status_code == 701:
-            print("🌡️ [Dispense] Temperature critical (701) — showing hardware error")
+            # Temperature ABOVE critical threshold — the PT100 is reading garbage
+            # (open circuit / disconnected sensor).  Show a persistent hardware error;
+            # the hardware_error page will now detect the out-of-range reading and
+            # keep displaying the error rather than auto-clearing.
+            print("🌡️ [Dispense] Temperature critical / sensor error (701) — showing hardware error")
             Clock.schedule_once(
-                lambda dt: self.show_hardware_error("Temperature critical — contact support"), 0
+                lambda dt: self.show_hardware_error(
+                    "PT100 Sensor Error: temperature above critical threshold\n"
+                    "Check sensor connection and restart machine."
+                ), 0
             )
+        elif status_code == 704:
+            # Cup removed mid-dispense (schema §7.2) — resumable, send user back to place cup
+            print("🥛 [Dispense] Cup removed (704) — returning to place cup page")
+            Clock.schedule_once(lambda dt: self.show_place_cup_page(), 0)
+        elif status_code in [705, 706, 707, 708, 711]:
+            # Hardware fault (flow, pump, heater, water level, timeout)
+            error_messages = {
+                705: "Flow Failure\nPlease contact support",
+                706: "Pump Fault\nPlease contact support",
+                707: "Heater Fault\nPlease contact support",
+                708: "Low Water Level\nFill tank and retry",
+                711: "Pump Timeout\nPlease contact support",
+            }
+            msg = error_messages.get(status_code, f"Hardware Error (code {status_code})")
+            print(f"🔧 [Dispense] Hardware fault ({status_code}) — showing hardware error page")
+            Clock.schedule_once(lambda dt: self.show_hardware_error(msg), 0)
         else:
-            # All other error codes stay on place_cup_page for retry
+            # Unrecognised code — stay on current page; ESP32 may recover
             pass
 
     def reduce_cups_after_payment(self):
@@ -1003,28 +1364,40 @@ class ChaiOrderingApp(App):
             print(f"🚀 Starting QR generation for {number_of_cups} cups...")
 
             # ── OPT 1: Use cached machine status from global monitor ──
+            # Only block QR generation if machine is EXPLICITLY "offline".
+            # Kulhad API returns various strings ("active", "online", etc.) — reject
+            # only on a literal "offline" response, not on any non-"online" value.
             cached_state = getattr(self, 'previous_machine_state', None)
 
             if cached_state is None:
-                # First request ever — no cache yet, do a real check
-                print("🔄 No cached machine state — doing direct status check")
-                status_data = self.api_client.check_machine_status(self.MACHINE_ID)
-                if not status_data or not status_data.get("success", False):
-                    print(f"❌ Machine status check failed: {status_data}")
-                    Clock.schedule_once(lambda dt: self.show_error_fallback())
-                    return
-                machine_status = status_data.get("data", {}).get("status", "").lower()
-                if machine_status != "online":
-                    print(f"❌ Machine is {machine_status} during QR generation")
-                    Clock.schedule_once(lambda dt: self.show_error_fallback())
-                    return
+                # First request — no cache yet; check ESP32 machineState from local
+                # polling server (instant, no internet required).
+                print("🔄 No cached machine state — checking ESP32 directly")
+                try:
+                    from config import DEVICE_ID, POLLING_SERVER_URL
+                    esp_r = get_localhost_session().get(
+                        f"{POLLING_SERVER_URL}/api/device/{DEVICE_ID}/temperature",
+                        timeout=2
+                    )
+                    if esp_r.status_code == 200:
+                        esp_state = esp_r.json().get('machineState', 'UNKNOWN').upper()
+                        if esp_state == 'OFFLINE':
+                            print("❌ ESP32 machineState is OFFLINE — aborting QR generation")
+                            Clock.schedule_once(lambda dt: self.show_error_fallback())
+                            return
+                        print(f"✅ ESP32 machineState = '{esp_state}' — proceeding with QR")
+                    else:
+                        # Polling server unavailable — proceed; physical machine ready
+                        print("⚠️ Polling server unavailable for state check — proceeding with QR generation")
+                except Exception:
+                    print("⚠️ ESP32 state check failed — proceeding with QR generation")
             else:
                 # Use cached result — saves one full HTTP round-trip
-                if cached_state != "online":
-                    print(f"❌ Cached machine state is '{cached_state}' — aborting QR generation")
+                if cached_state == "offline":
+                    print(f"❌ Cached machine state is 'offline' — aborting QR generation")
                     Clock.schedule_once(lambda dt: self.show_error_fallback())
                     return
-                print(f"✅ Machine status OK (cached: {cached_state}) — skipping status API call")
+                print(f"✅ Machine status OK (cached: '{cached_state}') — skipping status API call")
 
             # ── Now only run the QR generation call ──
             qr_data = self.api_client.generate_payment_qr(self.MACHINE_ID, number_of_cups)
@@ -1039,15 +1412,18 @@ class ChaiOrderingApp(App):
                 if image_content:
                     print(f"⚡ Generating QR code from imageContent ({len(image_content)} chars)...")
                     qr_gen_start = time.time()
-                    # Generate QR code directly from UPI string
-                    qr_image = QRUtils.generate_qr_from_content(image_content)
+                    qr_pil = QRUtils.generate_qr_from_content(image_content)
                     qr_gen_time = time.time() - qr_gen_start
-                    
-                    if qr_image:
+
+                    if qr_pil:
+                        # Pre-encode to PNG bytes here in background thread to keep
+                        # the main thread fast (no PIL.save on UI thread).
+                        import io as _io
+                        qr_buf = _io.BytesIO()
+                        qr_pil.save(qr_buf, format='PNG')
                         total_time = time.time() - start_time
                         print(f"✅ QR generation complete! Total: {total_time:.2f}s (QR image: {qr_gen_time:.3f}s)")
-                        # Update payment page in main thread
-                        Clock.schedule_once(lambda dt: self.update_payment_page(qr_image, qr_data))
+                        Clock.schedule_once(lambda dt: self.update_payment_page(qr_buf, qr_data))
                         return
                     else:
                         print("❌ QRUtils.generate_qr_from_content returned None")
@@ -1091,9 +1467,23 @@ class ChaiOrderingApp(App):
     
     def update_payment_page(self, qr_image, data):
         """Update payment page with QR code and show it"""
+        incoming_id = data.get('id', '') if data else ''
+
+        # Guard: only accept QR delivery while user is still on the loading screen.
+        # generate_qr_code() and _prefetch_worker run in background threads — they
+        # can complete AFTER the user has cancelled and navigated away.  Without this
+        # check the payment page would re-appear over the selection page.
+        if self._current_page != 'loading':
+            if incoming_id:
+                print(f"🗑️ QR arrived but page is '{self._current_page}' (not loading) — cancelling {incoming_id}")
+                threading.Thread(
+                    target=lambda qid=incoming_id: self.api_client.cancel_payment(qid),
+                    daemon=True
+                ).start()
+            return
+
         # Guard against double-delivery race: if a QR is already showing,
         # cancel the incoming duplicate so it is never orphaned on the backend.
-        incoming_id = data.get('id', '') if data else ''
         if self.current_qr_code_id and self.current_qr_code_id != incoming_id:
             stale_id = incoming_id
             if stale_id:
@@ -1148,24 +1538,22 @@ class ChaiOrderingApp(App):
         from ui_pages.error_popup import QRErrorPopup
         
         def on_retry():
-            """Called when user clicks Retry"""
+            """Called when user clicks Try Again"""
             print(f"🔄 Retrying QR generation for {self.selected_cups} cups...")
-            # Show loading page and retry with stored cup count
             self.show_loading_page()
+            # Shorter timeout on retry — if it fails again, bail fast
             self.loading_timeout_event = Clock.schedule_once(
-                lambda dt: self.show_error_fallback(is_retry=True), 15
+                lambda dt: self.show_error_fallback(is_retry=True), 8
             )
-            # Retry QR generation in background thread
-            import threading
             threading.Thread(
-                target=lambda: self.generate_qr_code(self.selected_cups), 
+                target=lambda: self.generate_qr_code(self.selected_cups),
                 daemon=True
             ).start()
-        
+
         def on_cancel():
-            """Called when popup auto-dismisses (8 seconds timeout)"""
-            print("⚠️ Retry not clicked - going to home screen")
-            self.show_selection_page()
+            """Called when user clicks Go Back or popup auto-dismisses"""
+            print("⚠️ Going back to home screen")
+            self.show_payment_method_page()
         
         popup = QRErrorPopup(
             on_retry_callback=on_retry,
@@ -1215,7 +1603,11 @@ class ChaiOrderingApp(App):
             elif status_message == "paid":
                 self.payment_page.update_status("Payment received!")
                 # Don't reduce cups here - will reduce when user clicks dispense
-                Clock.schedule_once(lambda dt: self.show_dispensing_page(), 1.5)
+                # Guard: user may have navigated away in the 1.5s window (e.g. cancel tap)
+                Clock.schedule_once(
+                    lambda dt: self.show_dispensing_page() if self.screen_manager.current == 'payment' else None,
+                    1.5
+                )
 
             elif status_message == "expired":
                 print("Payment expired, cancelling automatically")
@@ -1244,9 +1636,8 @@ class ChaiOrderingApp(App):
             # Show QR expired page when timer expires
             self.show_page('qr_expired')
         else:
-            # Always go back to home (payment_method) on cancel — not selection.
-            # Going to selection left the prefetch cache intact, so pressing
-            # Confirm immediately would serve the old (now-cancelled) QR.
+            # Always go back to home (selection) on cancel — not staying on payment.
+            # Going to selection resets the flow so the next Confirm gets a fresh QR.
             self.show_payment_method_page()
 
         # Call API to cancel payment in background (non-blocking)
@@ -1322,9 +1713,18 @@ class ChaiOrderingApp(App):
         current_time = time.time()
         elapsed = current_time - self.last_activity_time
         
-        # Activate screensaver on payment method page or machine empty page
+        # Activate screensaver on home/idle pages.
+        # machine_empty in 'offline' mode shows the "Under Maintenance" message —
+        # that must stay visible, so the screensaver is blocked in that state.
         current_page = self.screen_manager.current
-        is_screensaver_eligible_page = current_page in ['payment_method', 'machine_empty']
+        machine_empty_is_offline = (
+            current_page == 'machine_empty'
+            and getattr(self.machine_empty_page, 'current_mode', 'empty') == 'offline'
+        )
+        is_screensaver_eligible_page = (
+            current_page in ['payment_method', 'selection', 'machine_empty']
+            and not machine_empty_is_offline
+        )
         
         if elapsed >= self.INACTIVE_TIMEOUT and not self.screensaver_active and is_screensaver_eligible_page:
             if self.video_path and os.path.exists(self.video_path):
@@ -1335,6 +1735,8 @@ class ChaiOrderingApp(App):
     def activate_screensaver(self):
         """Activate the screensaver"""
         print("Activating screensaver...")
+        # User walked away — cancel any pre-generated QRs so they don't expire in cache
+        self.cancel_prefetched_qrs()
         # Remember which page we were on before screensaver
         self.previous_page_before_screensaver = self.screen_manager.current
         self.screensaver_active = True
@@ -1344,76 +1746,32 @@ class ChaiOrderingApp(App):
         """Deactivate the screensaver - navigate immediately using local cups count"""
         self.screensaver_active = False
         print("⚡ Deactivating screensaver - navigating immediately...")
-        
+
+        # If machine went offline during the screensaver (or was already offline when
+        # it activated), return to the maintenance page instead of the home page so
+        # the user can't attempt an order while the ESP32 is unreachable.
+        if getattr(self, 'previous_machine_state', None) == 'offline':
+            print("🔴 Machine still OFFLINE — returning to maintenance page")
+            self.machine_empty_page.set_mode('offline')
+            self.show_page('machine_empty')
+            return
+
+        # The global 10s monitor skips itself while the screensaver is showing
+        # (to avoid fighting over screen state), so waterLevelLow could have
+        # gone True during that idle period without being caught yet. Check it
+        # here too, same as the offline check above, before letting the user
+        # start an order on a machine that's actually out of water.
+        if hardware_monitor.get_water_level_low():
+            print("🔴 Machine water level LOW (caught on screensaver wake) — showing maintenance page")
+            self._water_level_low_active = True
+            self.show_water_level_low()
+            return
+
         # INSTANT NAVIGATION - show home page immediately with local cups count
         self.show_payment_method_page()
         
         # No API call needed - local cups count is already available
         print(f"📦 Using local cups count: {self.local_cups_count}")
-    
-    def check_machine_status_background(self):
-        """Check machine status in background with parallel API calls and fetch cups count"""
-        try:
-            # Wait a moment to let home page render first
-            time.sleep(0.3)
-            
-            print("🔄 Fetching machine status and cups count (transition to home)...")
-            
-            status_result = [None]
-            cups_result = [None]
-            
-            def fetch_status():
-                """Parallel thread 1: Get machine status"""
-                try:
-                    status_result[0] = self.api_client.check_machine_status(self.MACHINE_ID)
-                except Exception as e:
-                    print(f"Status check error: {e}")
-            
-            def fetch_cups():
-                """Parallel thread 2: Get cups count"""
-                try:
-                    cups_result[0] = self.api_client.get_remaining_cups(self.MACHINE_ID)
-                except Exception as e:
-                    print(f"Cups check error: {e}")
-            
-            # Run both API calls in parallel
-            t1 = threading.Thread(target=fetch_status, daemon=True)
-            t2 = threading.Thread(target=fetch_cups, daemon=True)
-            
-            t1.start()
-            t2.start()
-            
-            # Wait for both (max 3 seconds)
-            t1.join(timeout=3)
-            t2.join(timeout=3)
-            
-            # Process results
-            is_online = True
-            cups_count = 0
-            
-            if status_result[0] and status_result[0].get("success", False):
-                data = status_result[0].get("data", {})
-                machine_status = data.get("status", "offline")
-                is_online = machine_status.lower() == "online"
-            
-            if cups_result[0] and cups_result[0].get("success", False):
-                cups_count = cups_result[0].get("cups", 0)
-                # Store locally for future use
-                Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
-            
-            # Navigate based on results
-            if not is_online:
-                print("⚠️ Machine offline detected - switching to machine empty page")
-                Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
-            elif cups_count <= 0:
-                print("⚠️ No cups available - switching to machine empty page")
-                Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
-            else:
-                print(f"✅ Machine online with {cups_count} cups - staying on home page")
-        
-        except Exception as e:
-            print(f"Background status check error: {e}")
-            # Stay on home page if check fails
     
     def on_timer_expired(self):
         """Handle payment timer expiration"""
@@ -1427,61 +1785,144 @@ class ChaiOrderingApp(App):
         self.hardware_error_monitor_event = Clock.schedule_interval(self.check_hardware_errors, 2)
         
     def check_hardware_errors(self, dt):
-        """Check for hardware errors and navigate to error page if needed"""
+        """Check for hardware errors and navigate to error page if needed.
+
+        Runs the actual check in a background thread. get_latest_error() can
+        block for up to 35s (its fast cached-history path sometimes misses and
+        falls back to sending a slow health_check command) — and this function
+        is a Clock.schedule_interval callback firing every 2s on the MAIN UI
+        thread. Without offloading it, the entire app would freeze solid for
+        up to 35s every time that cache misses.
+        """
         current_screen = self.screen_manager.current
-        
+
         # Don't check during critical operations to avoid interrupting them
         critical_screens = ['dispensing', 'place_cup', 'payment', 'thank_you', 'heating']  # Removed 'transaction_processing'
         if current_screen in critical_screens:
             # Skip error checking during critical operations
             return
-        
-        error_msg = hardware_monitor.get_latest_error()
-        
-        # Only show error page if we're not already on it and there's an error
-        if error_msg and current_screen != 'hardware_error':
-            print(f"Hardware error detected: {error_msg} - Navigating to error page")
-            self.show_hardware_error(error_msg)
+
+        # Guard against overlapping checks — if get_latest_error() is still
+        # running (e.g. mid-35s health_check call) when the next 2s tick fires,
+        # skip rather than stacking up concurrent calls.
+        if getattr(self, '_checking_hardware_errors', False):
+            return
+        self._checking_hardware_errors = True
+
+        def _check_in_background():
+            error_msg = None
+            try:
+                error_msg = hardware_monitor.get_latest_error()
+            except Exception as e:
+                print(f"⚠️ check_hardware_errors background error: {e}")
+            finally:
+                self._checking_hardware_errors = False
+            Clock.schedule_once(lambda dt: _handle_result(error_msg), 0)
+
+        def _handle_result(error_msg):
+            # Re-check current screen — by the time this background check
+            # resolves (up to 35s later), the user may have since started a
+            # critical operation that shouldn't be interrupted.
+            current = self.screen_manager.current
+            if error_msg and current != 'hardware_error' and current not in critical_screens:
+                print(f"Hardware error detected: {error_msg} - Navigating to error page")
+                self.show_hardware_error(error_msg)
+
+        threading.Thread(target=_check_in_background, daemon=True).start()
     
     def show_hardware_error(self, error_message):
         """Navigate to hardware error page with a custom error message"""
         print(f"Showing hardware error page: {error_message}")
+        # Stop heating monitor so it doesn't call show_heating_page after we navigate away
+        self.stop_heating_monitor()
+        # Clear the QR ID so the next payment cycle isn't blocked by the
+        # duplicate-delivery guard in update_payment_page().
+        self.current_qr_code_id = ""
+        self._dispensing_cups = False  # order aborted
         if hasattr(self.hardware_error_page, 'set_error_message'):
             self.hardware_error_page.set_error_message(error_message)
         self.show_page('hardware_error')
     
     def check_heating_on_startup(self):
-        """Check temperature on startup. Always mandatory — no bypass exists.
-        Shows heating page if temp < SERVING_TEMP; navigates to home once ready.
+        """Check temperature on startup. Uses only the fast cached path (GET /temperature).
+        If no cached data is available yet, defaults immediately to the heating page —
+        the heating monitor will navigate home once temperature is confirmed ready.
+        The slow health_check command path is intentionally skipped here because it can
+        block for 30-60 s (one ESP32 poll cycle), leaving the user on the selection page
+        with no feedback and allowing them to start an order before heating is confirmed.
         """
-        from config import SERVING_TEMP
+        from config import SERVING_TEMP, DEVICE_ID, POLLING_SERVER_URL
         def check_temp_background():
+            temp = None
+            raw_reading = None  # track raw value before range-filter
             try:
-                # Check PT100 temperature
-                temp = hardware_monitor.get_pt100_temperature()
-
-                # Reject readings outside valid water range (open-circuit PT100
-                # can spike to 300-400°C; short-circuit reads near -10°C or 0°C).
-                if temp is not None and (temp < -10 or temp > 120):
-                    print(f"⚠️ PT100 startup read {temp}°C — out of range, treating as sensor error")
-                    temp = None
-
-                if temp is None:
-                    print("⚠️ Can't read temperature at startup — showing heating page as safe default")
-                    Clock.schedule_once(lambda dt: self.show_heating_page(None), 0)
-                elif temp < SERVING_TEMP:
-                    print(f"🔥 Tea is heating: {temp:.1f}°C (target: {SERVING_TEMP}°C)")
-                    Clock.schedule_once(lambda dt: self.show_heating_page(temp), 0)
-                else:
-                    print(f"✅ Tea is ready: {temp:.1f}°C")
-                    Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 0)
-
+                # Fast path only: read last health POST from the polling server cache.
+                # This returns 404 if ESP32 hasn't sent a health POST yet (first boot).
+                r = get_localhost_session().get(
+                    f"{POLLING_SERVER_URL}/api/device/{DEVICE_ID}/temperature",
+                    timeout=2
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    # If ESP32 says OFFLINE (e.g. operating hours end, maintenance)
+                    # skip the heating check — the operating hours scheduler or global
+                    # status monitor will navigate to machine_empty instead.
+                    if data.get('machineState', '').upper() == 'OFFLINE':
+                        print("⚠️ Startup: ESP32 machineState=OFFLINE — skipping heating check")
+                        return
+                    raw = data.get('pt100_temperature')
+                    if raw is not None:
+                        raw_reading = float(raw)
+                        # Reject out-of-range (open-circuit / short-circuit artifacts)
+                        if -10 <= raw_reading <= 120:
+                            temp = raw_reading
             except Exception as e:
-                print(f"Heating check error: {e}")
-                # On exception also default to heating page — safer than assuming ready
+                print(f"Startup temp cache read error: {e}")
+
+            # If raw reading is >120°C the sensor is disconnected (open circuit artifact).
+            # Show hardware error immediately — no retry, no heating page loop.
+            if raw_reading is not None and raw_reading > 120:
+                msg = f"PT100 Sensor Error: reading {raw_reading:.0f}°C (sensor disconnected?)"
+                print(f"⚠️ Startup: {msg}")
+                Clock.schedule_once(lambda dt: self.show_hardware_error(msg), 0)
+                return
+
+            if temp is None:
+                # No cached data yet — the ESP32 may not have sent its first health
+                # POST in the 1.5 s since app start.  Retry once with a short delay
+                # before defaulting to the heating page so we avoid a false redirect.
+                import time as _t
+                _t.sleep(3)  # wait 3 s for the first health POST to arrive
+                try:
+                    r2 = get_localhost_session().get(
+                        f"{POLLING_SERVER_URL}/api/device/{DEVICE_ID}/temperature",
+                        timeout=2
+                    )
+                    if r2.status_code == 200:
+                        raw2 = r2.json().get('pt100_temperature')
+                        if raw2 is not None:
+                            raw_reading = float(raw2)
+                            if raw_reading > 120:
+                                msg = f"PT100 Sensor Error: reading {raw_reading:.0f}°C (sensor disconnected?)"
+                                print(f"⚠️ Startup retry: {msg}")
+                                Clock.schedule_once(lambda dt: self.show_hardware_error(msg), 0)
+                                return
+                            if -10 <= raw_reading <= 120:
+                                temp = raw_reading
+                                print(f"✅ Startup retry: got temp {temp:.1f}°C")
+                except Exception:
+                    pass
+
+            if temp is None:
+                print("⚠️ No cached temperature after retry — defaulting to heating page")
                 Clock.schedule_once(lambda dt: self.show_heating_page(None), 0)
-        
-        # Run in background thread
+            elif temp < SERVING_TEMP:
+                print(f"🔥 Tea is heating: {temp:.1f}°C (target: {SERVING_TEMP}°C)")
+                Clock.schedule_once(lambda dt: self.show_heating_page(temp), 0)
+            else:
+                print(f"✅ Tea is ready: {temp:.1f}°C")
+                Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 0)
+
         threading.Thread(target=check_temp_background, daemon=True).start()
     
     def setup_idle_temperature_monitoring(self):
@@ -1492,9 +1933,16 @@ class ChaiOrderingApp(App):
         self._idle_temp_event = Clock.schedule_interval(self.check_idle_temperature, 5.0)  # Check every 5 seconds
 
     def check_idle_temperature(self, dt):
+        # Never interrupt an active flush with a heating page redirect.
+        if getattr(self, 'flush_in_progress', False):
+            return
+
         current_page = self.screen_manager.current
-        # Only check on payment_method or screensaver screens
-        if current_page not in ['payment_method', 'screensaver']:
+        # Check ONLY on true idle/waiting screens — NEVER during active dispense/delivery.
+        # 'place_cup' is intentionally excluded: the user is mid-dispensing and
+        # a low temp reading here must NOT hijack the screen to the heating page.
+        # 'dispensing' and 'thank_you' are also excluded for the same reason.
+        if current_page not in ['payment_method', 'selection', 'screensaver', 'qr_expired']:
             return
 
         # Avoid overlapping read threads
@@ -1505,15 +1953,27 @@ class ChaiOrderingApp(App):
 
         def _do_check():
             try:
-                temp = hardware_monitor.get_pt100_temperature()
-                # Reject invalid readings (out of bounds)
-                if temp is not None and (temp < -10 or temp > 120):
+                # Fast path: read from polling server cache (ESP32 health POST data).
+                # Avoids the 35 s slow-path health_check round-trip which would hold
+                # _idle_temp_checking=True for up to 35 s, effectively making this
+                # 5 s interval check run only once every ~40 s.
+                temp = hardware_monitor._fetch_cached_temperature()
+                # Fallback: use last_temperature if the cache just expired
+                if temp is None and hardware_monitor.last_temperature is not None:
+                    temp = float(hardware_monitor.last_temperature)
+                    print(f"🔥 Idle temp: cache stale, using last known {temp:.1f}°C")
+
+                # Reject out-of-range and glitch readings.
+                # 0.0 °C is a common ESP32 sensor glitch; realistic minimum
+                # for an installed machine is ~10 °C.
+                if temp is not None and (temp < 10 or temp > 120):
+                    if temp is not None:
+                        print(f"🔥 Idle temp: ignoring glitch reading {temp}°C")
                     temp = None
 
                 from config import SERVING_TEMP
                 if temp is not None and temp < SERVING_TEMP:
-                    print(f"🔥 Idle temp check: temperature is low ({temp:.1f}°C < {SERVING_TEMP}°C). Redirecting to heating page.")
-                    # Transition to heating page on the Kivy main thread
+                    print(f"🔥 Idle temp check: {temp:.1f}°C < {SERVING_TEMP}°C — redirecting to heating page")
                     Clock.schedule_once(lambda dt: self.show_heating_page(temp), 0)
             except Exception as e:
                 print(f"Error in idle temperature check: {e}")
@@ -1524,17 +1984,33 @@ class ChaiOrderingApp(App):
 
     def show_heating_page(self, current_temp):
         """Show heating page and start temperature monitoring"""
-        # Enable fast polling mode in hardware monitor
         hardware_monitor.enable_heating_mode()
-        
-        # Update temperature
+
+        # If caller didn't have a temp reading, pull one from the polling server
+        # cache immediately so the page never opens with "--°C" (live data is always
+        # fresher than waiting for the first 1-second tick in start_heating_monitor).
+        if current_temp is None:
+            try:
+                from config import DEVICE_ID, POLLING_SERVER_URL
+                _r = get_localhost_session().get(
+                    f"{POLLING_SERVER_URL}/api/device/{DEVICE_ID}/temperature",
+                    timeout=2
+                )
+                if _r.status_code == 200:
+                    _t = _r.json().get('pt100_temperature')
+                    if _t is not None and -10 <= float(_t) <= 120:
+                        current_temp = float(_t)
+            except Exception:
+                pass
+
         self.heating_page.update_temperature(current_temp)
-        
-        # Navigate to heating page
         self.show_page('heating')
-        
-        # Start fast polling (every 1 second)
         self.start_heating_monitor()
+
+        # Pre-generate QR while heating — skip if we already know the exact cup count
+        # since we'll generate the right QR when heating completes.
+        if getattr(self, '_pending_cups_after_heating', None) is None:
+            self.trigger_qr_prefetch(1)
     
     def start_heating_monitor(self):
         """Monitor temperature every 1 second until ready.
@@ -1548,7 +2024,6 @@ class ChaiOrderingApp(App):
         print("🔥 Starting heating monitor (checking every 1 second)")
 
         self.heating_temp_error_count = 0
-        self.heating_ready_count = 0       # consecutive readings >= 80°C required
         self._heating_poll_running = False  # guard: only one read in flight at a time
         self.heating_start_time = time.time()  # used to detect a never-responding sensor
 
@@ -1578,9 +2053,8 @@ class ChaiOrderingApp(App):
                     self.show_hardware_error("Temperature sensor error")
                 return
 
-            # temp is None but no exception — _temperature_loop hasn't returned a
-            # reading yet (ESP32 poll cycle takes a few seconds).  Show placeholder
-            # and keep waiting.  Only escalate if no data arrives within 120 s.
+            # temp is None but no exception — health_check command pending or no data yet.
+            # Only escalate after 300 s of nothing.
             if temp is None:
                 elapsed = time.time() - self.heating_start_time
                 if elapsed > 300:
@@ -1588,7 +2062,10 @@ class ChaiOrderingApp(App):
                     self.stop_heating_monitor()
                     self.show_hardware_error("Temperature sensor not responding")
                 else:
-                    self.heating_page.update_temperature(None)
+                    # Keep the last known reading on screen — never overwrite a valid
+                    # temperature with "--°C" just because a command is still in flight.
+                    fallback = hardware_monitor.last_temperature
+                    self.heating_page.update_temperature(fallback)
                 return
 
             # Good read — reset error streak and update display
@@ -1597,24 +2074,32 @@ class ChaiOrderingApp(App):
 
             from config import SERVING_TEMP
             if temp >= SERVING_TEMP:
-                self.heating_ready_count += 1
-                print(f"🌡️ Above target: {temp:.1f}°C (confirm {self.heating_ready_count}/3)")
-                if self.heating_ready_count < 3:
-                    return
-                print(f"✅ Tea ready at {temp:.1f}°C - navigating to home")
                 self.stop_heating_monitor()
-                self.show_payment_method_page(fetch_cups=True)
+                pending_cups = getattr(self, '_pending_cups_after_heating', None)
+                if pending_cups is not None:
+                    print(f"✅ Tea ready at {temp:.1f}°C - proceeding to QR for {pending_cups} cups")
+                    self._pending_cups_after_heating = None
+                    self.show_payment_page(pending_cups)
+                else:
+                    print(f"✅ Tea ready at {temp:.1f}°C - navigating to home")
+                    self.show_payment_method_page(fetch_cups=True)
             else:
-                self.heating_ready_count = 0
                 print(f"🔥 Heating: {temp:.1f}°C / {SERVING_TEMP}°C")
 
         def _read_temp_background():
             """Run in a background daemon thread — never on the main thread."""
             temp, exc = None, None
             try:
-                # Call _fetch_temperature() directly so the heating page always
-                # gets a fresh reading from ESP32, not a possibly-stale cache.
-                temp = hardware_monitor._fetch_temperature()
+                # force_fresh=True: bypasses cache and sends a health_check command so
+                # the displayed temperature reflects the actual PT100 reading now, not
+                # a 30-second-old health POST.
+                temp = hardware_monitor._fetch_temperature(force_fresh=True)
+                # If the health_check command is already in flight (_slow_path_lock busy),
+                # _fetch_temperature returns last_temperature (may be None on first poll).
+                # Fall back to the ESP32 health POST cache to avoid showing "--°C" while
+                # the first command round-trip is pending.
+                if temp is None:
+                    temp = hardware_monitor._fetch_cached_temperature()
                 if temp is not None:
                     hardware_monitor.last_temperature = temp
             except Exception as e:
@@ -1649,15 +2134,8 @@ class ChaiOrderingApp(App):
         """Handle keyboard events"""
         # ESC key = 27
         if key == 27:
-            # SAFETY: Only allow ESC exit from home/screensaver pages.
-            # Pressing ESC mid-dispense was killing the app abruptly.
-            safe_exit_pages = ['payment_method', 'screensaver', 'machine_empty', 'hardware_error']
-            current_page = self.screen_manager.current
-            if current_page in safe_exit_pages:
-                print("\n🚶 ESC key pressed on home screen - Shutting down gracefully...")
-                self.stop()
-            else:
-                print(f"\n⚠️ ESC key pressed on '{current_page}' - IGNORED (use Back button to navigate)")
+            print("\n🚶 ESC key pressed - Shutting down gracefully...")
+            self.stop()
             return True
         
         # F11 key = 292
@@ -1682,6 +2160,11 @@ class ChaiOrderingApp(App):
             if hasattr(self, '_idle_temp_event') and self._idle_temp_event:
                 self._idle_temp_event.cancel()
                 self._idle_temp_event = None
+
+            # Cancel operating hours timers
+            for t in getattr(self, '_operating_timers', []):
+                t.cancel()
+            self._operating_timers = []
 
             # Stop scheduled flush monitor
             self.stop_scheduled_flush_monitor()
@@ -1742,7 +2225,13 @@ class ChaiOrderingApp(App):
             import os
             os._exit(0)
         
-        Clock.schedule_once(force_exit, 8)  # Only fires if process hangs
+        # threading.Timer fires independently of Kivy's Clock (which may stop
+        # during shutdown), guaranteeing the force-exit fires even after Kivy stops.
+        # daemon=True: if the process exits cleanly on its own, this thread is killed
+        # automatically so it doesn't hold up shutdown for 8s unnecessarily.
+        _t = threading.Timer(8, force_exit)
+        _t.daemon = True
+        _t.start()
         
         return super().on_stop()
     
@@ -1751,10 +2240,14 @@ class ChaiOrderingApp(App):
         # Stop any existing monitoring first
         self.stop_global_status_monitoring()
 
-        # Delay the first check by 30s so the network and Vercel API are settled
-        # at boot before we start reading machine status. An immediate check at
-        # autostart boot caused transient "offline" readings → heater cycling.
+        # A short delay so the ESP32 has sent at least one health POST before the
+        # first check. Transient "offline" readings at boot (which previously
+        # caused heater cycling with no delay at all) are now filtered by the
+        # 2-consecutive-reads debounce in _do_global_status_check instead of a
+        # blanket 30s wait — so a genuine offline/water-low state at boot is no
+        # longer invisible to the user for half a minute.
         def _start_interval(dt):
+            self._global_status_start_event = None
             self.check_global_machine_status(0)
             self.global_status_monitor_event = Clock.schedule_interval(
                 self.check_global_machine_status,
@@ -1762,16 +2255,151 @@ class ChaiOrderingApp(App):
             )
             print(f"🌐 Started GLOBAL machine status monitoring (every {self.global_status_check_interval} seconds)")
 
-        Clock.schedule_once(_start_interval, 30)
-        print("🌐 Global status monitoring will begin in 30s (network settle time)")
+        import os as _os
+        startup_delay = 3 if _os.environ.get("UK_TEST_MODE") else 5
+        self._global_status_start_event = Clock.schedule_once(_start_interval, startup_delay)
+        print(f"🌐 Global status monitoring will begin in {startup_delay}s")
     
     def stop_global_status_monitoring(self):
         """Stop global machine status monitoring"""
+        if hasattr(self, '_global_status_start_event') and self._global_status_start_event:
+            self._global_status_start_event.cancel()
+            self._global_status_start_event = None
         if self.global_status_monitor_event:
             self.global_status_monitor_event.cancel()
             self.global_status_monitor_event = None
             print("🛑 Stopped GLOBAL machine status monitoring")
     
+    # ── Global RFID monitor ───────────────────────────────────────────────────
+    # Pages whose own on_enter/on_leave hooks manage RFID polling — skip them
+    # so the global monitor doesn't double-process cards on those pages.
+    _GRF_OWN_PAGES = frozenset({'payment_method', 'selection', 'heating', 'hardware_error', 'rfid_auth'})
+    # Pages where an RFID tap has no useful action (mid-dispense or wrap-up)
+    _GRF_SKIP_PAGES = frozenset({'dispensing', 'place_cup', 'thank_you', 'flush'})
+
+    def _start_global_rfid_monitor(self):
+        """Start the always-on RFID monitor that handles every page not already
+        covered by a per-page RFID polling loop."""
+        self._grf_busy = False
+        self._grf_last_uid = None
+        self._grf_last_scan_time = 0.0
+        Clock.schedule_interval(self._grf_tick, 0.5)
+        print("🏷️ Global RFID monitor started (covers all pages without per-page polling)")
+
+    def _grf_tick(self, dt):
+        current = self._current_page
+        if current in self._GRF_OWN_PAGES or current in self._GRF_SKIP_PAGES:
+            return
+        if self._grf_busy:
+            return
+        # If PC/SC gave up (HID-only reader like Sycreader), skip silently.
+        # The HID keyboard path (rfid_reader) handles cards via on_key_down events.
+        if getattr(self, '_grf_pc_sc_gave_up', False):
+            return
+        handler = getattr(self, 'rfid_auth_handler', None)
+        if not handler or not getattr(handler, 'reader_active', False):
+            # Reader not ready — attempt re-init at most once every 30 s
+            now = time.time()
+            if now - getattr(self, '_grf_last_reinit', 0) > 30 and not getattr(self, '_grf_reinit_busy', False):
+                self._grf_last_reinit = now
+                self._grf_reinit_busy = True
+                threading.Thread(target=self._grf_reinit_reader, daemon=True).start()
+            return
+        self._grf_busy = True
+        threading.Thread(target=self._grf_check_card, args=(current,), daemon=True).start()
+
+    def _grf_reinit_reader(self):
+        """Re-initialize the PC/SC RFID reader if it wasn't ready at startup.
+        Gives up after 3 consecutive failures — for HID-only readers (Sycreader)
+        PC/SC will never succeed, and the HID path handles cards via rfid_reader."""
+        try:
+            handler = getattr(self, 'rfid_auth_handler', None)
+            if handler is None:
+                from utils.rfid_aes_auth import RFIDAESAuth
+                from config import RFID_MACHINE_ID
+                self.rfid_auth_handler = RFIDAESAuth(
+                    base_url="https://www.ukteawallet.com",
+                    machine_id=RFID_MACHINE_ID
+                )
+                if not self.rfid_auth_handler.reader_active:
+                    self._grf_pc_sc_failures = getattr(self, '_grf_pc_sc_failures', 0) + 1
+                else:
+                    self._grf_pc_sc_failures = 0
+                print(f"🔐 Global RFID: handler created, reader_active={self.rfid_auth_handler.reader_active}")
+            elif not handler.reader_active:
+                handler._init_reader()
+                failures = getattr(self, '_grf_pc_sc_failures', 0) + 1
+                self._grf_pc_sc_failures = failures
+                if failures >= 3:
+                    print("🔐 Global RFID: PC/SC reader unavailable after 3 attempts — "
+                          "HID keyboard path (rfid_reader) handles cards. Stopping PC/SC reinit.")
+                    self._grf_pc_sc_gave_up = True
+                # Only log first failure to avoid spam
+                elif failures == 1:
+                    print(f"🔐 Global RFID: reader re-init, reader_active={handler.reader_active}")
+        except Exception as e:
+            print(f"🔐 Global RFID: re-init error: {e}")
+        finally:
+            self._grf_reinit_busy = False
+
+    def _grf_check_card(self, page_at_start):
+        try:
+            uid = self.rfid_auth_handler.get_card_uid()
+            if uid and uid != self._grf_last_uid:
+                self._grf_last_uid = uid
+                Clock.schedule_once(lambda dt: self._grf_on_new_card(uid, page_at_start), 0)
+            elif not uid:
+                self._grf_last_uid = None
+        except Exception as e:
+            print(f"🏷️ Global RFID monitor error: {e}")
+        finally:
+            self._grf_busy = False
+
+    def _grf_on_new_card(self, uid, source_page):
+        now = time.time()
+        if now - self._grf_last_scan_time < 3:
+            return
+        self._grf_last_scan_time = now
+
+        # Re-check page — navigation may have happened between thread dispatch and now
+        current = self.screen_manager.current
+        if current in self._GRF_OWN_PAGES or current in self._GRF_SKIP_PAGES:
+            return
+
+        print(f"🏷️ Global RFID: card detected on page '{current}'")
+
+        # Delegate to payment_method_page's full RFID handler (auth, maintenance,
+        # balance check, navigate-to-dispensing).  Re-enable rfid_listening first
+        # because it may have been cleared by a prior per-page session.
+        pmp = self.payment_method_page
+        pmp.rfid_listening = True
+        pmp.handle_rfid_card_detected(uid)
+
+    def _on_hid_rfid_card(self, card_number):
+        """Handle an RFID card number received via HID keyboard mode.
+
+        Some ACR122U readers are configured to output the card ID as decimal
+        keystrokes (USB HID keyboard mode) instead of exposing themselves as a
+        PC/SC smartcard reader.  This callback receives those keystrokes and
+        routes them through the same authentication flow as the PC/SC path.
+        """
+        skip_pages = {'rfid_auth', 'dispensing', 'place_cup', 'thank_you', 'flush'}
+        current = self.screen_manager.current
+        if current in skip_pages:
+            return
+
+        print(f"🏷️ HID RFID: card number '{card_number}' on page '{current}'")
+
+        # Store card number so process_card() can use it when pyscard returns None
+        if getattr(self, 'rfid_auth_handler', None):
+            self.rfid_auth_handler.last_card_uid = str(card_number)
+
+        pmp = self.payment_method_page
+        pmp.rfid_listening = True
+        pmp.handle_rfid_card_detected(str(card_number))
+
+    # ─────────────────────────────────────────────────────────────────────────
+
     def check_global_machine_status(self, dt):
         """Check machine status in background - runs on all pages.
         screen_manager.current is read here (main thread) and passed to the
@@ -1787,8 +2415,8 @@ class ChaiOrderingApp(App):
             'dispensing',         # Actively dispensing
             'thank_you',          # Showing thank you
             'rfid_auth',          # RFID authentication
-            'heating',            # Tea heating
             'flush'               # Maintenance flush in progress
+            # 'heating' intentionally NOT skipped — OFFLINE must override heating
         ]
 
         if current_page in skip_pages:
@@ -1809,50 +2437,120 @@ class ChaiOrderingApp(App):
         reads of screen_manager.current.
         """
         try:
-            check_pages = ['payment_method', 'selection', 'payment', 'loading']
+            check_pages = ['payment_method', 'selection', 'payment', 'loading', 'heating']
 
             if current_page not in check_pages:
                 return
-            
-            # Check machine status
-            status_data = self.api_client.check_machine_status(self.MACHINE_ID)
-            
-            if status_data and status_data.get("success", False):
-                data = status_data.get("data", {})
-                machine_status = data.get("status", "offline")
-                is_online = machine_status.lower() == "online"
-                
-                # Track state for logging only — do NOT send set_state to ESP32.
-                # Sending OFFLINE causes ESP32 firmware to shut down the heater,
-                # which causes temperature cycling when cloud API has transient blips.
-                if self.previous_machine_state is not None:
-                    if self.previous_machine_state == "online" and not is_online:
-                        print("🔴 Machine state changed: ONLINE → OFFLINE (UI only)")
-                    elif self.previous_machine_state == "offline" and is_online:
-                        print("🟢 Machine state changed: OFFLINE → ONLINE (UI only)")
 
-                # Update previous state
-                self.previous_machine_state = "online" if is_online else "offline"
-                
-                if not is_online:
-                    # Machine went offline - navigate to machine empty page
-                    print("⚠️ GLOBAL CHECK: Machine went OFFLINE - navigating to machine empty page")
-                    Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
+            # Use ESP32's machineState from the local polling server — no internet
+            # dependency, real-time, and the ground-truth source for physical readiness.
+            # Kulhad is NOT used here; its status strings are unreliable ("active",
+            # "Active", "online", etc.) and require an external HTTP call.
+            try:
+                from config import DEVICE_ID, POLLING_SERVER_URL
+                esp32_resp = get_localhost_session().get(
+                    f"{POLLING_SERVER_URL}/api/device/{DEVICE_ID}/temperature",
+                    timeout=2
+                )
+                if esp32_resp.status_code == 200:
+                    esp32_data = esp32_resp.json()
+                    machine_state = esp32_data.get('machineState', 'UNKNOWN')
+                    ts = esp32_data.get('timestamp')
+                    # If last health POST is more than 90 s old the ESP32 stopped
+                    # communicating — treat as hardware offline regardless of machineState.
+                    if ts:
+                        from datetime import datetime as _dt
+                        age = time.time() - _dt.fromisoformat(ts).timestamp()
+                        if age > 90:
+                            print(f"🔴 ESP32 health POST is {age:.0f}s old — treating as hardware offline")
+                            machine_state = 'OFFLINE'
+                    is_online = machine_state.upper() != 'OFFLINE'
+                elif esp32_resp.status_code == 404:
+                    # No health POSTs received since server start → ESP32 not connected
+                    print("🔴 GLOBAL CHECK: No ESP32 health data (404) — hardware offline")
+                    machine_state = 'OFFLINE'
+                    is_online = False
+                else:
+                    print(f"🌐 GLOBAL CHECK: Polling server returned {esp32_resp.status_code} — skipping state update")
+                    self._checking_global_status = False
                     return
-            
-            # Also check cups count
+
+                if not is_online:
+                    # Require 2 consecutive OFFLINE reads (~10-20s apart) before
+                    # acting — filters out a single transient blip (e.g. right
+                    # after boot, before the network/ESP32 has settled) without
+                    # needing to blanket-delay the whole monitor by 30s.
+                    self._offline_confirm_count += 1
+                else:
+                    self._offline_confirm_count = 0
+
+                confirmed_offline = self._offline_confirm_count >= 2
+
+                if confirmed_offline and self.previous_machine_state != "offline":
+                    # Covers two cases:
+                    # 1. previous_machine_state is None (first check) and machine is already offline
+                    # 2. previous_machine_state == "online" and machine just went offline (ONLINE→OFFLINE)
+                    print("🔴 Machine state changed: → OFFLINE (ESP32, confirmed)")
+                    def _show_offline(dt):
+                        self.machine_empty_page.set_mode('offline')
+                        self.show_page('machine_empty')
+                    Clock.schedule_once(_show_offline, 0)
+                    # Notify kulhad backend
+                    threading.Thread(
+                        target=self.api_client.report_machine_status,
+                        args=(self.MACHINE_ID, 'offline'),
+                        daemon=True
+                    ).start()
+                elif is_online and self.previous_machine_state == "offline":
+                    print("🟢 Machine state changed: OFFLINE → ONLINE (ESP32)")
+                    Clock.schedule_once(lambda dt: self.check_heating_on_startup(), 0)
+                    # Notify kulhad backend
+                    threading.Thread(
+                        target=self.api_client.report_machine_status,
+                        args=(self.MACHINE_ID, 'online'),
+                        daemon=True
+                    ).start()
+
+                # Only update previous_machine_state from a CONFIRMED offline read or
+                # an online read — a single unconfirmed offline blip (count==1) must
+                # not flip this yet, or the debounce above could never reach count>=2
+                # with previous_machine_state still "online".
+                if confirmed_offline:
+                    self.previous_machine_state = "offline"
+                elif is_online:
+                    self.previous_machine_state = "online"
+                print(f"🌐 GLOBAL CHECK: ESP32 machineState = '{machine_state}' → is_online={is_online}")
+
+                # ── Water level low (ESP32 health_check → waterLevelLow) ────────
+                if is_online:
+                    water_low = hardware_monitor.get_water_level_low()
+                    if water_low and not self._water_level_low_active:
+                        print("🔴 GLOBAL CHECK: waterLevelLow=True — showing maintenance page")
+                        self._water_level_low_active = True
+                        Clock.schedule_once(lambda dt: self.show_water_level_low(), 0)
+                    elif not water_low and self._water_level_low_active:
+                        print("🟢 GLOBAL CHECK: waterLevelLow cleared — returning to selection")
+                        self._water_level_low_active = False
+                        Clock.schedule_once(lambda dt: self.clear_water_level_low(), 0)
+            except Exception as esp_err:
+                print(f"🌐 GLOBAL CHECK: ESP32 state check failed: {esp_err}")
+
+            # Machine_empty is NOT triggered by status check.
+            # machine_empty is only shown by decrement_local_cups() hitting 0
+            # or check_machine_availability() confirming 0 cups from the API.
+
+            # Sync cups count from cloud for refill detection only.
+            # Never write 0 to local here — cloud lags after a dispense and a stale 0
+            # would make check_machine_availability() show machine_empty on next page entry.
+            # decrement_local_cups() is the only authoritative zero signal.
             cups_data = self.api_client.get_remaining_cups(self.MACHINE_ID)
             if cups_data and cups_data.get("success", False):
                 cups_count = cups_data.get("cups", 0)
-                
-                # Update local count
-                Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
-                
-                if cups_count <= 0:
-                    # Cups ran out - navigate to machine empty page
-                    print("⚠️ GLOBAL CHECK: Cups = 0 - navigating to machine empty page")
-                    Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
-                    return
+                if cups_count > 0:
+                    Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
+                    print(f"🌐 GLOBAL CHECK: Cloud cups = {cups_count} (local synced)")
+                else:
+                    print(f"🌐 GLOBAL CHECK: Cloud cups = 0 (skipping local sync — may be post-dispense lag)")
                     
         except Exception as e:
             print(f"Global status check error: {e}")

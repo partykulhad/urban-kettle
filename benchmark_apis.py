@@ -501,7 +501,10 @@ def run_benchmark():
         json.dump({
             "timestamp": datetime.now().isoformat(),
             "network_info": net_info,
-            "dns_times": dns_times,
+            "dns_times": {
+                "kulhad_vercel_app": dns_times_kulhad,
+                "ukteawallet_com": dns_times_rfid
+            },
             "api_results": all_results
         }, f, indent=2)
     print(f"\n📁 Results saved to: {output_file}")

@@ -272,7 +272,8 @@ class MaintenancePage(Screen):
         self.trigger_get_status(None)
 
     def go_back(self, instance):
-        self.manager.current = 'payment_method'
+        from kivy.app import App
+        App.get_running_app().show_payment_method_page()
 
     # ── Auto Flush Timing (backend) ──
     def sync_flush_time(self, instance):

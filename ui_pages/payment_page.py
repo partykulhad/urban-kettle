@@ -243,20 +243,25 @@ class PaymentPage(Screen):
         self.qr_animation.start(self.qr_image)
     
     def update_qr_code(self, pil_image):
-        """Update QR code image from PIL Image"""
-        # Convert PIL image to RGB if needed
-        if pil_image.mode != 'RGB':
-            pil_image = pil_image.convert('RGB')
-        
-        # Convert PIL image to bytes
-        buf = io.BytesIO()
-        pil_image.save(buf, format='PNG')
-        buf.seek(0)
-        
-        # Create Kivy image from bytes
+        """Update QR code image from PIL Image or pre-encoded bytes.
+
+        Accepts either a PIL.Image or an io.BytesIO that already contains
+        PNG-encoded bytes (produced in a background thread by the prefetch
+        worker to avoid blocking the main thread with PIL.save).
+        """
+        if isinstance(pil_image, io.BytesIO):
+            # Fast path: bytes were encoded in background thread
+            buf = pil_image
+            buf.seek(0)
+        else:
+            # Slow path: encode PIL image here on the main thread (fallback)
+            if pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
+            buf = io.BytesIO()
+            pil_image.save(buf, format='PNG')
+            buf.seek(0)
+
         kivy_image = CoreImage(buf, ext='png')
-        
-        # Update the image widget texture
         self.qr_image.texture = kivy_image.texture
     
     def update_status(self, status):

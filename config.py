@@ -5,17 +5,14 @@ Central Configuration File
 # ============================================================================
 # DEVICE CONFIGURATION
 # ============================================================================
-
+#UK_14335C5D3FB4
+#UK_30C9223A073C
 # ESP32 Device ID.
-# Format: UK_XXXXXXXXXXXX (MAC-address based, set by ESP32 firmware).
-#
-# Leave DEVICE_ID as an empty string ("") on a NEW machine installation.
-# The app will query the polling server on startup, detect the connected
-# ESP32 automatically, and write its ID back here — no manual step needed.
-#
-# On an EXISTING machine this value is already filled in.  Change it only
-# if the ESP32 board is physically replaced.
-DEVICE_ID = ""
+# Format: UK_XXXXXXXXXXXX (MAC-address based, printed on the ESP32 board or
+# read from the serial monitor at boot).
+# Set this manually before deploying.  Change it only if the ESP32 board
+# is physically replaced.
+DEVICE_ID = "UK_14335C5D48C8"
 
 # ============================================================================
 # API CONFIGURATION
@@ -23,6 +20,7 @@ DEVICE_ID = ""
 
 # Polling server URL (ESP32 communication)
 POLLING_SERVER_URL = "http://localhost:5000"
+
 
 # ============================================================================
 # SENSOR ID CONFIGURATION
@@ -38,7 +36,14 @@ KTYPE_SENSOR_ID = "ktype_sensor_01"   # Heater element temperature sensor
 # ============================================================================
 
 # Machine ID for cloud APIs
-MACHINE_ID = "UKTL_BLN_001"
+MACHINE_ID = "UKL_BLR_004"
+
+# Cups remaining at which the canister-low alert is sent to Kulhad.
+CANISTER_ALERT_THRESHOLD = 10
+
+# Cups remaining at or below which the machine is treated as empty (shows the
+# machine_empty page) — a small buffer before truly hitting 0, not literal 0.
+MACHINE_EMPTY_THRESHOLD = 2
 
 # ============================================================================
 # HEATING CONFIGURATION
@@ -77,11 +82,9 @@ def ml_to_pump_ms(ml: float) -> int:
 # ============================================================================
 # NOTES
 # ============================================================================
-# 
+#
 # To change the device ID:
 # 1. Edit the DEVICE_ID value above
 # 2. Save this file
 # 3. Restart the application
-#
-# The device ID will be automatically used by all hardware API calls
 #

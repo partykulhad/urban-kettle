@@ -23,28 +23,52 @@ class VideoWidget(Widget):
         self.video_event = None
         self.texture = None
         self._target_duration = None  # if set, video speed is adjusted to match
-        
-        # Create texture for video frames
+        self._video_rect = None       # persistent canvas rectangle — updated in-place each frame
+
         self.bind(size=self.update_video_size)
-        
+
     def update_video_size(self, *args):
-        """Update video display when widget size changes"""
-        if self.texture:
+        """Keep the canvas rectangle in sync when the widget is resized."""
+        if self._video_rect:
+            self._video_rect.pos = self.pos
+            self._video_rect.size = self.size
+        elif self.texture:
+            # Fallback if rect was cleared but texture still exists
             self.canvas.clear()
             with self.canvas:
                 Color(1, 1, 1, 1)
-                Rectangle(texture=self.texture, pos=self.pos, size=self.size)
-    
+                self._video_rect = Rectangle(texture=self.texture, pos=self.pos, size=self.size)
+
     def set_video_path(self, path):
-        """Set video file path"""
         self.video_path = path
 
     def set_playback_duration(self, duration_seconds):
         """Adjust playback speed so the video finishes in exactly duration_seconds."""
         self._target_duration = duration_seconds
 
+    def _push_frame(self, frame):
+        """Decode a raw cv2 BGR frame and push it to the canvas rectangle.
+        Creates the rectangle once; subsequent calls just swap the texture so
+        the canvas is never cleared mid-playback (eliminates per-frame blink)."""
+        widget_w = max(1, int(self.width))
+        widget_h = max(1, int(self.height))
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.resize(frame, (widget_w, widget_h))
+        tex = Texture.create(size=(widget_w, widget_h))
+        tex.blit_buffer(frame.flatten(), colorfmt='rgb', bufferfmt='ubyte')
+        tex.flip_vertical()
+        self.texture = tex
+        if self._video_rect is None:
+            self.canvas.clear()
+            with self.canvas:
+                Color(1, 1, 1, 1)
+                self._video_rect = Rectangle(texture=tex, pos=self.pos, size=self.size)
+        else:
+            self._video_rect.texture = tex
+            self._video_rect.pos = self.pos
+            self._video_rect.size = self.size
+
     def start_video(self):
-        """Start video playback"""
         if not self.video_path or not os.path.exists(self.video_path):
             print(f"Video file not found: {self.video_path}")
             self.show_placeholder()
@@ -61,7 +85,6 @@ class VideoWidget(Widget):
         video_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
         total_frames = self.cap.get(cv2.CAP_PROP_FRAME_COUNT)
 
-        # If a pump duration was set, stretch/compress the video to match it exactly
         if self._target_duration and total_frames > 0:
             playback_fps = total_frames / self._target_duration
             print(f"Video: {total_frames:.0f} frames @ {video_fps}fps → "
@@ -70,50 +93,34 @@ class VideoWidget(Widget):
             playback_fps = video_fps
             print(f"Video FPS: {playback_fps}")
 
+        # Pre-render frame 0 synchronously so the canvas is never blank when
+        # the dispensing page appears (eliminates the white-flash at video start).
+        ret, first_frame = self.cap.read()
+        if ret and first_frame is not None:
+            self._push_frame(first_frame)
+
         self.video_event = Clock.schedule_interval(self.update_frame, 1.0 / playback_fps)
-    
+
     def update_frame(self, dt):
-        """Update video frame"""
         if not self.is_playing or not self.cap or not self.cap.isOpened():
             return False
-        
+
         ret, frame = self.cap.read()
         if ret and frame is not None:
-            # Convert frame from BGR to RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Get widget dimensions (ensure they're integers and not zero)
-            widget_w = max(1, int(self.width))
-            widget_h = max(1, int(self.height))
-            
-            # Resize frame to exactly match widget size (stretch to fill)
-            frame = cv2.resize(frame, (widget_w, widget_h))
-            
-            # Create texture from resized frame
-            self.texture = Texture.create(size=(widget_w, widget_h))
-            self.texture.blit_buffer(frame.flatten(), colorfmt='rgb', bufferfmt='ubyte')
-            self.texture.flip_vertical()
-            
-            # Update canvas to fill the entire widget
-            self.canvas.clear()
-            with self.canvas:
-                Color(1, 1, 1, 1)
-                Rectangle(texture=self.texture, pos=self.pos, size=self.size)
+            self._push_frame(frame)
         else:
             if self.loop:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             else:
-                # Video finished — hold on the last frame, no abrupt freeze
-                # stop_video() is called by on_leave() when the page navigates away
+                # Video finished — hold the last frame; stop_video() releases on page leave
                 self.is_playing = False
                 if self.video_event:
                     self.video_event.cancel()
                     self.video_event = None
-        
+
         return True
     
     def stop_video(self):
-        """Stop video playback"""
         self.is_playing = False
         if self.video_event:
             self.video_event.cancel()
@@ -121,6 +128,7 @@ class VideoWidget(Widget):
         if self.cap and self.cap.isOpened():
             self.cap.release()
             self.cap = None
+        self._video_rect = None  # reset so next start_video() creates a fresh rectangle
     
     def show_placeholder(self):
         """Show placeholder when video is not available"""

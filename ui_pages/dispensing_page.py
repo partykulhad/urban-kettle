@@ -24,6 +24,7 @@ class DispensingPage(Screen):
         self.is_paused = False
         self.pump_check_event = None
         self.safety_timeout_event = None
+        self._pump_duration_timer = None  # primary completion trigger
         self.updates_received = 0
         self.has_started_dispensing = False
         self.completion_handled = False
@@ -32,6 +33,17 @@ class DispensingPage(Screen):
         # Prevents a single stray "idle" reading mid-dispense from exiting early.
         self._consecutive_idle_count = 0
         self._IDLE_EXIT_THRESHOLD = 3  # 3 × 0.5 s = 1.5 s of confirmed idle
+        # Null-response counter: if polling server returns nothing N times in a row
+        # (server down / unreachable), force completion so the video doesn't hang.
+        # Threshold is 60 × 0.5s = 30s — well above any normal pump duration so the
+        # primary pump_duration_timer always fires first in healthy conditions.
+        self._null_response_count = 0
+        self._NULL_EXIT_THRESHOLD = 60  # 60 × 0.5 s = 30 s of no response
+        # Lazy-start pump timer: armed once pump confirms "ongoing" (not from on_enter)
+        # so the timer is anchored to when the pump physically starts, not when the UI navigates.
+        self._pump_start_detected = False
+        self._pump_duration_s = 0.0
+        self._PUMP_PAD = 2.0
         
         # Main layout
         main_layout = BoxLayout(orientation='vertical')
@@ -94,16 +106,16 @@ class DispensingPage(Screen):
         
         main_layout.add_widget(Widget(size_hint_y=0.01))
         
-        # Video section — plays ONCE at native 30fps
+        # Video section — loops at native FPS like a GIF until pump completes
         video_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.40)
         from ui_pages.screensaver_page import VideoWidget
-        self.video_widget = VideoWidget(loop=False, size_hint=(None, None), size=(320, 240))
+        self.video_widget = VideoWidget(loop=True, size_hint=(None, None), size=(320, 240))
         video_path = os.path.join('assets', 'dispensing.mp4')
         self.video_widget.set_video_path(video_path)
         video_section.add_widget(self.video_widget)
         main_layout.add_widget(video_section)
 
-        # Instruction text — animates with moving dots after video ends
+        # Static instruction text — shown throughout dispensing
         instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.08)
         self.instruction_label = Label(
             text='Your tea is being prepared.',
@@ -141,6 +153,8 @@ class DispensingPage(Screen):
         self.has_started_dispensing = False
         self.completion_handled = False
         self._consecutive_idle_count = 0
+        self._null_response_count = 0
+        self._pump_start_detected = False
         self._dot_state = 0
         if hasattr(self, 'dispensing_title'):
             self.dispensing_title.text = 'DISPENSING...'
@@ -151,14 +165,39 @@ class DispensingPage(Screen):
         if hasattr(self, '_dot_event') and self._dot_event:
             self._dot_event.cancel()
             self._dot_event = None
+
+        # ── Pump-duration-based completion timer ─────────────────────────────
+        # ESP32's pump_status endpoint returns static data (elapsed always 0)
+        # so we cannot rely on it for completion detection.
+        # Use the pump duration that was sent to ESP32 as the authoritative timer.
+        from config import ml_to_pump_ms
+        app = App.get_running_app()
+        ml = getattr(app, 'ml_to_dispense', 100)
+        pump_duration_s = ml_to_pump_ms(ml) / 1000.0
+
+        # ── Video selection (per-ml video or fallback) ────────────────────────
+        # Loops at native FPS like a GIF.  No speed adjustment needed — the video
+        # plays continuously until handle_completion() is called by the pump timer.
+        PUMP_PAD = 2.0
         if hasattr(self, 'video_widget'):
-            # Video is 13.94s — longer than any pump duration (max 13.3s for 120ml).
-            # Pump completion always stops the video before it ends → zero freeze.
-            # Dot animation fires only if pump somehow takes > 14s (safety net).
-            Clock.schedule_once(lambda dt: self._start_dot_animation(), 14.0)
+            ml_video = os.path.join('assets', f'dispensing_{int(ml)}.mp4')
+            fallback_video = os.path.join('assets', 'dispensing.mp4')
+            video_path = ml_video if os.path.exists(ml_video) else fallback_video
+            self.video_widget.set_video_path(video_path)
+            # Do NOT call set_playback_duration — loop at native FPS.
             self.video_widget.start_video()
+
+        # Store duration so _update_pump_state() can start the timer precisely when
+        # the ESP32 first reports pumpState="ongoing" (anchored to actual pump start,
+        # not to UI navigation which happens before the command reaches the ESP32).
+        self._pump_duration_s = pump_duration_s
+        self._PUMP_PAD = PUMP_PAD
+        self._pump_duration_timer = None
+        print(f"⏱ Pump duration: {pump_duration_s:.1f}s + {PUMP_PAD:.0f}s pad ({ml}ml) — timer starts on first 'ongoing' poll")
+
         self.start_pump_monitoring()
-        self.safety_timeout_event = Clock.schedule_once(self.handle_safety_timeout, 60)
+        # Safety net: fires only if pump_duration_timer somehow fails (e.g. page re-entered)
+        self.safety_timeout_event = Clock.schedule_once(self.handle_safety_timeout, max(60, pump_duration_s + 30))
 
     def on_leave(self):
         if hasattr(self, 'video_widget'):
@@ -171,21 +210,10 @@ class DispensingPage(Screen):
         if self.safety_timeout_event:
             self.safety_timeout_event.cancel()
             self.safety_timeout_event = None
+        if self._pump_duration_timer:
+            self._pump_duration_timer.cancel()
+            self._pump_duration_timer = None
     
-    def _start_dot_animation(self):
-        """After video ends, animate dots on the instruction label so there is
-        always visible motion during the remaining pump time."""
-        if self.completion_handled:
-            return
-        dots = ['Dispensing .  ', 'Dispensing .. ', 'Dispensing ...']
-        def _tick(dt):
-            if self.completion_handled or not hasattr(self, 'instruction_label'):
-                return False
-            self.instruction_label.text = dots[self._dot_state % 3]
-            self._dot_state += 1
-            return True
-        self._dot_event = Clock.schedule_interval(_tick, 0.5)
-
     def start_pump_monitoring(self):
         print("🔍 Monitoring hardware status (Reference Logic)...")
         # self.progress_bar.value = 0
@@ -209,10 +237,21 @@ class DispensingPage(Screen):
             app = App.get_running_app()
             result = app.api_client.get_pump_status(DEVICE_ID)
             if result and 'response' in result:
+                self._null_response_count = 0
                 data = result['response'].get('data', {})
                 Clock.schedule_once(lambda dt: self._update_pump_state(data), 0)
+            else:
+                self._null_response_count += 1
+                print(f"⚠️ Pump status null response #{self._null_response_count}/{self._NULL_EXIT_THRESHOLD}")
+                if self._null_response_count >= self._NULL_EXIT_THRESHOLD:
+                    print("❌ Polling server unreachable — forcing dispense completion")
+                    Clock.schedule_once(lambda dt: self.handle_completion(), 0)
         except Exception as e:
             print(f"Status check error: {e}")
+            self._null_response_count += 1
+            if self._null_response_count >= self._NULL_EXIT_THRESHOLD:
+                print("❌ Repeated pump check errors — forcing dispense completion")
+                Clock.schedule_once(lambda dt: self.handle_completion(), 0)
         finally:
             self._checking_pump = False
             
@@ -238,10 +277,24 @@ class DispensingPage(Screen):
         if pump_state == 'ongoing' or progress > 0:
             self.has_started_dispensing = True
             self._consecutive_idle_count = 0
+            # Arm the completion timer on the first confirmed "ongoing" poll.
+            # The dispense command is sent in a background thread so the pump may start
+            # 1-5 s after on_enter() — starting the timer here anchors it to the real pump start.
+            if pump_state == 'ongoing' and not self._pump_start_detected:
+                self._pump_start_detected = True
+                if self._pump_duration_timer:
+                    self._pump_duration_timer.cancel()
+                self._pump_duration_timer = Clock.schedule_once(
+                    lambda dt: self.handle_completion(),
+                    self._pump_duration_s + self._PUMP_PAD
+                )
+                print(f"⏱ Pump confirmed 'ongoing' — completion timer: {self._pump_duration_s:.1f}s + {self._PUMP_PAD:.0f}s")
 
         # ── EXIT CONDITIONS ───────────────────────────────────────────────────
-        # 1. Hardware explicitly says "completed" or progress hit 100%
-        is_done = (pump_state == 'completed') or (progress >= 100)
+        # 1. Hardware explicitly says done or progress hit 100%.
+        #    Real ESP32 uses "on" for completed state (schema §12: ongoing→on).
+        #    Mock uses "completed". Both handled here.
+        is_done = (pump_state in ('completed', 'on')) or (progress >= 100)
 
         # 2. Hardware is idle/off AFTER dispensing started.
         #    Require _IDLE_EXIT_THRESHOLD consecutive idle polls to avoid
@@ -280,25 +333,24 @@ class DispensingPage(Screen):
         self.completion_handled = True
         print("🎉 Dispensing complete!")
         self.stop_pump_monitoring()
+        if self._pump_duration_timer:
+            self._pump_duration_timer.cancel()
+            self._pump_duration_timer = None
         if self.safety_timeout_event:
             self.safety_timeout_event.cancel()
             self.safety_timeout_event = None
 
-        # Stop video immediately — no frozen last frame possible
+        # Stop video and clear canvas — VideoWidget.stop_video() releases the
+        # capture but does NOT clear the canvas (by design for screensaver),
+        # so we explicitly clear it here to remove the frozen last frame.
         if hasattr(self, 'video_widget'):
             self.video_widget.stop_video()
+            self.video_widget.canvas.clear()
         if hasattr(self, '_dot_event') and self._dot_event:
             self._dot_event.cancel()
             self._dot_event = None
-        if hasattr(self, 'dispensing_title'):
-            self.dispensing_title.text = 'YOUR TEA IS READY!'
-            self.dispensing_title.color = (0.18, 0.7, 0.44, 1)
-        if hasattr(self, 'instruction_label'):
-            self.instruction_label.text = 'Enjoy your chai!'
-            self.instruction_label.color = (0.18, 0.7, 0.44, 1)
-
         app = App.get_running_app()
-        Clock.schedule_once(lambda dt: app.handle_cup_completion(), 2.0)
+        Clock.schedule_once(lambda dt: app.handle_cup_completion(), 0)
 
     def handle_safety_timeout(self, dt):
         print("⚠️ Safety timeout - force completing")

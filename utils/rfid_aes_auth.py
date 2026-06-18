@@ -14,6 +14,7 @@ try:
     SMARTCARD_AVAILABLE = True
 except ImportError:
     SMARTCARD_AVAILABLE = False
+import threading
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -32,6 +33,7 @@ class RFIDAESAuth:
         self.reader = None  # Store reader object
         self.reader_active = False
         self.last_card_uid = None  # Store last read card UID
+        self._reader_lock = threading.Lock()  # Serialize all smartcard operations
         
         # RF Keep-Alive state
         self._rf_connection = None  # Persistent connection for RF field
@@ -120,26 +122,20 @@ class RFIDAESAuth:
     
     def _send_rf_keepalive_pulse(self):
         """Send FF CA 00 00 00 to keep RF field on and PN532 awake"""
-        try:
-            if not self.reader:
-                return
-            
-            # Create or reuse persistent connection
-            if self._rf_connection is None:
-                self._rf_connection = self.reader.createConnection()
-                self._rf_connection.connect()
-            
-            # Send Get UID APDU (FF CA 00 00 00)
-            # This keeps the RF field active even if no card is present
-            get_uid_apdu = [0xFF, 0xCA, 0x00, 0x00, 0x00]
-            response, sw1, sw2 = self._rf_connection.transmit(get_uid_apdu)
-            
-            # Response: 90 00 = card present, 6A 81 = no card (both are OK for keep-alive)
-            # The important thing is the RF field stays on
-            
-        except Exception as e:
-            # Connection lost, will be recreated on next pulse
-            self._rf_connection = None
+        with self._reader_lock:
+            try:
+                if not self.reader:
+                    return
+
+                if self._rf_connection is None:
+                    self._rf_connection = self.reader.createConnection()
+                    self._rf_connection.connect()
+
+                get_uid_apdu = [0xFF, 0xCA, 0x00, 0x00, 0x00]
+                self._rf_connection.transmit(get_uid_apdu)
+
+            except Exception:
+                self._rf_connection = None
     
     def pause_keepalive(self):
         """Pause RF keep-alive during UI animations to prevent GIL contention"""
@@ -307,58 +303,48 @@ class RFIDAESAuth:
         
         # Try up to 2 times (initial + 1 retry)
         for attempt in range(2):
-            try:
-                # Create new connection to detect card presence
-                connection = self.reader.createConnection()
-                connection.connect()
-                
-                # Method 1: Use FF CA 00 00 00 (RECOMMENDED for ACR122U)
-                # This is the official way to get UID and keeps RF field stable
+            with self._reader_lock:
                 try:
-                    get_uid_apdu = [0xFF, 0xCA, 0x00, 0x00, 0x00]
-                    response, sw1, sw2 = connection.transmit(get_uid_apdu)
-                    
-                    if sw1 == 0x90 and sw2 == 0x00 and len(response) > 0:
-                        uid = bytes(response).hex().upper()
-                        self.last_card_uid = uid
-                        self.connection = connection
-                        # Don't print on every successful read to reduce log spam
-                        return uid
-                except:
-                    pass
-                
-                # Method 2: Try DESFire specific method (fallback for 7-byte UID)
-                try:
-                    # Select master application
-                    connection.transmit([0x90, 0x5A, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00])
-                    
-                    # Get version to retrieve UID
-                    response, sw1, sw2 = connection.transmit([0x90, 0x60, 0x00, 0x00, 0x00])
-                    
-                    if sw1 == 0x91 and sw2 == 0xAF:
-                        connection.transmit([0x90, 0xAF, 0x00, 0x00, 0x00])
-                        response, sw1, sw2 = connection.transmit([0x90, 0xAF, 0x00, 0x00, 0x00])
-                        
-                        if len(response) >= 7:
-                            uid = bytes(response[0:7]).hex().upper()
+                    connection = self.reader.createConnection()
+                    connection.connect()
+
+                    # Method 1: FF CA 00 00 00 (recommended for ACR122U)
+                    try:
+                        get_uid_apdu = [0xFF, 0xCA, 0x00, 0x00, 0x00]
+                        response, sw1, sw2 = connection.transmit(get_uid_apdu)
+                        if sw1 == 0x90 and sw2 == 0x00 and len(response) > 0:
+                            uid = bytes(response).hex().upper()
                             self.last_card_uid = uid
                             self.connection = connection
-                            print(f"✓ DESFire Card UID: {uid}")
                             return uid
-                except:
+                    except Exception:
+                        pass
+
+                    # Method 2: DESFire fallback for 7-byte UID
+                    try:
+                        connection.transmit([0x90, 0x5A, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00])
+                        response, sw1, sw2 = connection.transmit([0x90, 0x60, 0x00, 0x00, 0x00])
+                        if sw1 == 0x91 and sw2 == 0xAF:
+                            connection.transmit([0x90, 0xAF, 0x00, 0x00, 0x00])
+                            response, sw1, sw2 = connection.transmit([0x90, 0xAF, 0x00, 0x00, 0x00])
+                            if len(response) >= 7:
+                                uid = bytes(response[0:7]).hex().upper()
+                                self.last_card_uid = uid
+                                self.connection = connection
+                                print(f"✓ DESFire Card UID: {uid}")
+                                return uid
+                    except Exception:
+                        pass
+
+                    return None
+
+                except Exception:
                     pass
-                
-                return None
-                
-            except Exception as e:
-                # On failure, wait 300ms and retry (as per recommended flow)
-                if attempt == 0:
-                    import time
-                    time.sleep(0.3)  # 300ms wait before retry
-                    continue
-                # Second attempt also failed
-                return None
-        
+
+            if attempt == 0:
+                import time
+                time.sleep(0.3)
+
         return None
     
     def convert_apdu_hex_to_bytes(self, apdu_hex):
@@ -400,18 +386,8 @@ class RFIDAESAuth:
                     return {"success": False, "error": "No card UID available"}
             
             print(f"🔐 Authenticating card: {card_uid}" + (f" (retry {retry_attempt})" if retry_attempt > 0 else ""))
-            
-            # Create a FRESH connection for authentication
-            print("🔗 Creating fresh connection for authentication...")
-            if not self.reader:
-                self._auth_in_progress = False
-                return {"success": False, "error": "Reader not available"}
-            
-            connection = self.reader.createConnection()
-            connection.connect()
-            print("✓ Fresh connection established")
-            
-            # Step 1: Start authentication
+
+            # Step 1: Start authentication (no card connection needed yet)
             response = self.http_session.post(
                 f"{self.base_url}/api/rfid/auth/start",
                 json={
@@ -419,23 +395,21 @@ class RFIDAESAuth:
                     "keyNumber": 0,
                     "machineId": self.machine_id
                 },
-                timeout=3  # Reduced from 5s to 3s
+                timeout=3
             )
-            
+
             if response.status_code != 200:
                 self._auth_in_progress = False
                 return {"success": False, "error": "Auth start failed"}
-            
+
             data = response.json()
             if not data.get('success'):
                 self._auth_in_progress = False
                 return {"success": False, "error": "Auth start error"}
-            
-            # Check card category
+
             card_category = data.get('cardCategory')
-            
+
             if card_category == 'maintenance':
-                # Maintenance card - return immediately without authentication
                 print(f"✓ Maintenance Card Detected")
                 print(f"   Action: {data.get('action')}")
                 print(f"   Duration: {data.get('duration')} seconds")
@@ -443,19 +417,37 @@ class RFIDAESAuth:
                 return {
                     "success": True,
                     "authenticated": True,
-                    "dispensed": False,  # No dispense for maintenance
+                    "dispensed": False,
                     "cardCategory": "maintenance",
                     "action": data.get('action'),
                     "message": data.get('message'),
                     "duration": data.get('duration'),
                     "cardId": card_uid
                 }
-            
-            # Dispensing card - continue with full authentication
+
+            # Dispensing card — needs PC/SC APDU exchange with the physical card.
+            # Try to open a fresh connection now (after verifying card type).
+            print("🔗 Creating PC/SC connection for APDU exchange...")
+            connection = None
+            with self._reader_lock:
+                try:
+                    if self.reader:
+                        connection = self.reader.createConnection()
+                        connection.connect()
+                        print("✓ PC/SC connection established")
+                except Exception:
+                    connection = None
+
+            if connection is None:
+                self._auth_in_progress = False
+                print("❌ No PC/SC connection — reader may be in HID keyboard mode")
+                return {"success": False, "error": "Reader not in smartcard mode — cannot authenticate dispensing card"}
+
+            # Dispensing card - continue with full AES authentication
             self.session_id = data['sessionId']
             apdu1 = data['apduCommand']
             print(f"✓ Dispensing Card - Session ID: {self.session_id}")
-            
+
             # Step 2: Get Enc(RndB) from card
             apdu = self.convert_apdu_hex_to_bytes(apdu1)
             card_response, sw1, sw2 = connection.transmit(apdu)
@@ -557,17 +549,16 @@ class RFIDAESAuth:
     
     def process_card(self):
         """
-        Complete flow: Read card UID and authenticate
-        Returns: dict with authentication result
+        Complete flow: Read card UID and authenticate.
+        Falls back to last_card_uid (set by HID reader) when pyscard returns None.
         """
-        # Get card UID
         card_uid = self.get_card_uid()
         if not card_uid:
+            # HID keyboard readers store the number in last_card_uid before calling this
+            card_uid = self.last_card_uid
+        if not card_uid:
             return {"success": False, "error": "Failed to read card"}
-        
-        # Authenticate and dispense
-        result = self.authenticate_and_dispense(card_uid)
-        return result
+        return self.authenticate_and_dispense(card_uid)
     
     def stop(self):
         """Stop RFID handler and clean up resources"""

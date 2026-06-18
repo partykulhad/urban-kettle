@@ -13,18 +13,92 @@ from kivy.uix.popup import Popup
 from kivy.uix.floatlayout import FloatLayout
 import os
 import time
+import threading
+
+
+class CupsCounterWidget(BoxLayout):
+    """Cups counter widget for top-right of selection page — matches payment_method_page design."""
+
+    def __init__(self, **kwargs):
+        super().__init__(orientation='vertical', spacing=0, **kwargs)
+        self.cups_count = 0
+        self.is_loading = True
+
+        top_row = BoxLayout(orientation='horizontal', spacing=2, size_hint_y=0.5)
+
+        cup_icon_path = os.path.join('assets', 'cupnumber.png')
+        if os.path.exists(cup_icon_path):
+            self.cup_icon = Image(
+                source=cup_icon_path,
+                size_hint=(None, None),
+                size=(50, 50),
+                allow_stretch=True,
+                keep_ratio=True
+            )
+            top_row.add_widget(self.cup_icon)
+        else:
+            fallback_icon = Label(
+                text='☕',
+                font_size='40sp',
+                color=(0.714, 0.478, 0.176, 1),
+                size_hint=(None, None),
+                size=(50, 50),
+                halign='center',
+                valign='middle'
+            )
+            top_row.add_widget(fallback_icon)
+
+        self.number_label = Label(
+            text='...',
+            font_size='48sp',
+            bold=True,
+            color=(0.714, 0.478, 0.176, 1),
+            size_hint=(None, None),
+            size=(100, 50),
+            halign='left',
+            valign='middle'
+        )
+        self.number_label.bind(size=self.number_label.setter('text_size'))
+        top_row.add_widget(self.number_label)
+        self.add_widget(top_row)
+
+        self.availability_label = Label(
+            text='Cups\nAvailable',
+            font_size='15sp',
+            color=(0.714, 0.478, 0.176, 1),
+            size_hint_y=0.5,
+            halign='left',
+            valign='top',
+            padding=(0, 0, 20, 0)
+        )
+        self.availability_label.bind(size=self.availability_label.setter('text_size'))
+        self.add_widget(self.availability_label)
+
+    def update_count(self, count):
+        if count is None:
+            self.is_loading = True
+            self.number_label.text = '...'
+            return
+        self.is_loading = False
+        self.cups_count = count
+        self.number_label.text = str(count)
+        self.number_label.color = (0.714, 0.478, 0.176, 1)
+
+    def set_loading(self):
+        self.is_loading = True
+        self.number_label.text = '...'
 
 
 class SimpleButton(Button):
     """Simple button without animations or effects"""
-    
+
     def __init__(self, bg_color=(0.949, 0.6, 0.0, 1), **kwargs):
         super().__init__(**kwargs)
         self.background_color = (0, 0, 0, 0)
         self.background_normal = ''
         self.bg_color = bg_color
         self.bind(size=self.update_graphics, pos=self.update_graphics)
-        
+
     def update_graphics(self, *args):
         self.canvas.before.clear()
         with self.canvas.before:
@@ -203,9 +277,12 @@ class SelectionPage(Screen):
         # Touch debouncing variables for Raspberry Pi touchscreen
         self.last_button_press_time = 0
         self.button_cooldown = 0.1  # 100ms cooldown - fast but prevents accidental double-tap
+        self._confirm_blocked_until = 0  # entry grace period for confirm button
         
-        # Inactivity timer variables
-        self.inactivity_timeout = 10  # 10 seconds
+        # Inactivity timer variables — longer in test mode so screensaver doesn't
+        # interfere with manual testing (offline detection skipped on screensaver).
+        import os as _os
+        self.inactivity_timeout = 30 if _os.environ.get("UK_TEST_MODE") else 10
         self.inactivity_timer = None
         
         # Debounce timer — fires prefetch 0.2s after user stops tapping
@@ -245,21 +322,16 @@ class SelectionPage(Screen):
             )
             top_bar.add_widget(fallback_logo)
         
-        # Back button in top-right area
-        back_btn = SimpleButton(
-            text='Back',
+        # Cups counter widget in top-right area (selection is now home — no Back button)
+        self.cups_counter = CupsCounterWidget(
             size_hint=(None, None),
-            size=(140, 55),  # Increased from (100, 40)
-            font_size='22sp',  # Increased from 18sp
-            color=(1, 1, 1, 1),
-            bg_color=(0.6, 0.6, 0.6, 1)  # Gray color
+            size=(160, 80)
         )
-        back_btn.pos_hint = {'right': 0.98, 'top': 0.85}  # Moved down from 0.95 to 0.88
-        back_btn.bind(on_press=self.on_back_pressed)
-        top_bar.add_widget(back_btn)
-        
+        self.cups_counter.pos_hint = {'right': 0.98, 'top': 0.72}
+        top_bar.add_widget(self.cups_counter)
+
         main_layout.add_widget(top_bar)
-        
+
         # Spacing
         main_layout.add_widget(Widget(size_hint_y=0.02))
 
@@ -273,7 +345,7 @@ class SelectionPage(Screen):
             halign='center'
         )
         main_layout.add_widget(selection_label)
-        
+
         # Spacing
         main_layout.add_widget(Widget(size_hint_y=0.02))
 
@@ -424,18 +496,79 @@ class SelectionPage(Screen):
         App.get_running_app().trigger_qr_prefetch(self.number_of_cups)
 
     def on_confirm_pay(self, instance):
+        current_time = time.time()
+        # Entry grace period: block for 0.8s after page enters (prevents touch-through)
+        if current_time < getattr(self, '_confirm_blocked_until', 0):
+            remaining = self._confirm_blocked_until - current_time
+            print(f"🚫 Confirm blocked: entry grace period ({remaining:.2f}s remaining)")
+            return
+        # Normal cooldown guard (same as +/- buttons)
+        if current_time - self.last_button_press_time < self.button_cooldown:
+            print(f"🚫 Confirm cooldown active ({current_time - self.last_button_press_time:.3f}s ago)")
+            return
+        self.last_button_press_time = current_time
+
         # Stop inactivity timer when confirming
         self.stop_inactivity_timer()
-        
+
         app = App.get_running_app()
-        app.show_payment_page(self.number_of_cups)
-    
-    def on_back_pressed(self, instance):
-        """Navigate back to payment method page"""
-        self.stop_inactivity_timer()
-        app = App.get_running_app()
-        app.cancel_prefetched_qrs()
-        app.show_payment_method_page()
+
+        # Guard: if machine is at/below the empty threshold, show empty page instead of starting payment
+        from config import MACHINE_EMPTY_THRESHOLD
+        if app.local_cups_count is not None and app.local_cups_count <= MACHINE_EMPTY_THRESHOLD:
+            print(f"⚠️ Cups at {app.local_cups_count} (<= {MACHINE_EMPTY_THRESHOLD}) — showing machine empty page")
+            app.machine_empty_page.set_mode('empty')
+            app.show_page('machine_empty')
+            return
+
+        # Clamp selection to what's actually available (in case display lagged)
+        if app.local_cups_count is not None and self.number_of_cups > app.local_cups_count:
+            self.number_of_cups = max(1, app.local_cups_count)
+            self.number_display.set_number(self.number_of_cups)
+
+        # Check cached temp before generating QR — if cold, heat first then resume
+        num_cups = self.number_of_cups
+        threading.Thread(
+            target=self._check_temp_before_qr,
+            args=(app, num_cups),
+            daemon=True
+        ).start()
+
+    def _check_temp_before_qr(self, app, num_cups):
+        """Background: read cached temp; if below serving temp, heat before QR."""
+        from config import SERVING_TEMP, DEVICE_ID, POLLING_SERVER_URL
+        from utils.api_client import get_localhost_session
+        cached_temp = None
+        try:
+            _r = get_localhost_session().get(
+                f"{POLLING_SERVER_URL}/api/device/{DEVICE_ID}/temperature",
+                timeout=2
+            )
+            if _r.status_code == 200:
+                _t = _r.json().get('pt100_temperature')
+                if _t is not None and -10 <= float(_t) <= 120:
+                    cached_temp = float(_t)
+        except Exception:
+            pass
+
+        if cached_temp is not None and cached_temp < SERVING_TEMP:
+            print(f"🌡 Pre-QR temp check: {cached_temp:.1f}°C < {SERVING_TEMP}°C "
+                  f"— heating before QR for {num_cups} cups")
+            app._pending_cups_after_heating = num_cups
+            Clock.schedule_once(lambda dt: app.show_heating_page(cached_temp), 0)
+        else:
+            Clock.schedule_once(lambda dt: app.show_payment_page(num_cups), 0)
+
+    def update_cups_display(self, count):
+        """Update the cups counter widget and sync the +/- upper limit."""
+        if count is not None:
+            self.set_max_cups(count)
+        if hasattr(self, 'cups_counter'):
+            self.cups_counter.update_count(count)
+
+    def refresh_cups_count(self):
+        """Trigger a background refresh of the cups count."""
+        App.get_running_app().fetch_and_store_cups_count()
 
     def get_cup_count(self):
         return self.number_of_cups
@@ -447,15 +580,39 @@ class SelectionPage(Screen):
         if hasattr(self, 'number_display'):
             self.number_display.set_number(1)
 
+        # Block confirm button for 0.8s after page entry.
+        # Prevents touch-through: a cancel tap on the payment page can land on
+        # the confirm button here if both are in the same screen position.
+        self._confirm_blocked_until = time.time() + 0.8
+        self.last_button_press_time = time.time()
+
+        app = App.get_running_app()
+
+        # Show current local cups count immediately, then refresh in background
+        if hasattr(self, 'cups_counter'):
+            if app.local_cups_count is not None:
+                self.cups_counter.update_count(app.local_cups_count)
+            else:
+                self.cups_counter.set_loading()
+        app.fetch_and_store_cups_count()
+
         # Pre-fetch QR for the default 1-cup selection immediately
-        App.get_running_app().trigger_qr_prefetch(1)
+        app.trigger_qr_prefetch(1)
 
         # Start inactivity timer
         self.start_inactivity_timer()
-        
+
         # Bind touch events to reset timer on any interaction
         Window.bind(on_touch_down=self.on_user_interaction)
-    
+
+        # Delegate RFID polling to payment_method_page — it holds all RFID/AES logic.
+        # Selection is the home screen, so RFID should be active here.
+        if hasattr(app, 'payment_method_page'):
+            pmp = app.payment_method_page
+            pmp._last_detected_uid = None  # reset so any present card is treated as new
+            pmp.rfid_listening = True
+            pmp.start_rfid_polling()
+
     def on_leave(self):
         """Clean up when leaving page"""
         self.stop_inactivity_timer()
@@ -464,6 +621,13 @@ class SelectionPage(Screen):
         if self.prefetch_timer:
             self.prefetch_timer.cancel()
             self.prefetch_timer = None
+
+        # Stop RFID polling when leaving selection (the home page)
+        app = App.get_running_app()
+        if hasattr(app, 'payment_method_page'):
+            pmp = app.payment_method_page
+            pmp.rfid_listening = False
+            pmp.stop_rfid_polling()
     
     def on_user_interaction(self, window, touch):
         """Reset inactivity timer on any touch interaction"""
@@ -476,9 +640,8 @@ class SelectionPage(Screen):
         print(f"Selection page: Inactivity timer started ({self.inactivity_timeout} seconds)")
     
     def reset_inactivity_timer(self):
-        """Reset the inactivity timer"""
-        if self.inactivity_timer:
-            self.start_inactivity_timer()
+        """Reset the inactivity timer — always restarts even if timer already fired."""
+        self.start_inactivity_timer()
     
     def stop_inactivity_timer(self):
         """Stop the inactivity timer"""
@@ -488,20 +651,20 @@ class SelectionPage(Screen):
             print("Selection page: Inactivity timer stopped")
     
     def on_inactivity_timeout(self, dt):
-        """Handle inactivity timeout - return to payment method page"""
-        print("Selection page: Inactivity timeout - returning to payment method page")
+        """Handle inactivity timeout — go to screensaver (selection is now home)"""
+        print("Selection page: Inactivity timeout - going to screensaver")
         app = App.get_running_app()
         app.cancel_prefetched_qrs()
-        app.show_payment_method_page()
+        app.activate_screensaver()
     
     def set_max_cups(self, max_cups):
         """Set the maximum number of cups available"""
         self.max_cups = max_cups
         print(f"Selection page: Maximum cups set to {max_cups}")
         
-        # If current selection exceeds max, reduce it
+        # If current selection exceeds what's available, clamp it down
         if self.number_of_cups > self.max_cups:
-            self.number_of_cups = min(self.max_cups, 1)  # At least 1 cup
+            self.number_of_cups = max(1, self.max_cups)  # clamp to available, never below 1
             self.number_display.set_number(self.number_of_cups)
     
     def show_cups_limit_popup(self):

@@ -295,12 +295,21 @@ class HardwareDebugPage(Screen):
                 self.temp_label.text = f'Temperature: {temp}°C {"✓" if temp >= 82 else "⚠️ Heating..."}'
                 self.temp_label.color = temp_color
             
-            # Cups remaining
-            cups = health_data.get('cups_remaining')
-            if cups is not None:
-                cups_color = (0, 1, 0, 1) if cups > 3 else (1, 1, 0, 1) if cups > 0 else (1, 0, 0, 1)
-                self.cups_remaining_label.text = f'Cups Remaining: {cups}'
-                self.cups_remaining_label.color = cups_color
+            # Water level (from ESP32 ultrasonic sensor)
+            water = health_data.get('water_level')
+            unit = health_data.get('water_level_unit', 'cups')
+            if water is not None:
+                try:
+                    w_val = float(water)
+                    w_color = (0, 1, 0, 1) if w_val > 3 else (1, 1, 0, 1) if w_val > 0 else (1, 0, 0, 1)
+                    self.cups_remaining_label.text = f'Water Level: {w_val:.1f} {unit}'
+                    self.cups_remaining_label.color = w_color
+                except (TypeError, ValueError):
+                    self.cups_remaining_label.text = f'Water Level: {water} {unit}'
+                    self.cups_remaining_label.color = (1, 1, 1, 1)
+            else:
+                self.cups_remaining_label.text = 'Water Level: N/A (no ultrasonic data)'
+                self.cups_remaining_label.color = (0.5, 0.5, 0.5, 1)
             
             # Machine state
             state = health_data.get('machine_state', 'UNKNOWN')
@@ -357,44 +366,30 @@ class HardwareDebugPage(Screen):
         threading.Thread(target=update_pump_ui, daemon=True).start()
     
     def get_health_data(self):
-        """Get health data from hardware"""
+        """Get cached sensor data from the polling server's last ESP32 health POST."""
         try:
             if not hardware_monitor.device_id:
                 return None
-            
-            response = requests.post(
-                f"{hardware_monitor.api_base_url}/api/device/health",
-                json={
-                    "messageType": "health_check",
-                    "version": "1.0",
-                    "deviceId": hardware_monitor.device_id
-                },
+
+            from utils.api_client import get_localhost_session
+            response = get_localhost_session().get(
+                f"{hardware_monitor.api_base_url}/api/device/{hardware_monitor.device_id}/temperature",
                 timeout=2
             )
-            
+
             if response.status_code == 200:
                 data = response.json()
-                checks = data.get('checks', {})
-                
-                # Extract temperature
-                pt100_data = checks.get('sensor:pt100_sensor_01', [{}])[0]
-                temp = pt100_data.get('observedValue')
-                
-                # Extract cups remaining
-                ultrasonic_data = checks.get('sensor:ultrasonic_sensor_01', [{}])[0]
-                cups_remaining = ultrasonic_data.get('observedValue')
-                
-                # Machine state
-                machine_state = data.get('machineState', 'UNKNOWN')
-                
                 return {
-                    'temp': temp,
-                    'cups_remaining': cups_remaining,
-                    'machine_state': machine_state
+                    'temp': data.get('pt100_temperature'),
+                    'ktype_temp': data.get('ktype_temperature'),
+                    'water_level': data.get('water_level'),
+                    'water_level_unit': data.get('water_level_unit', 'cups'),
+                    'machine_state': data.get('machineState', 'UNKNOWN'),
+                    'timestamp': data.get('timestamp'),
                 }
-        except:
-            pass
-        
+        except Exception as e:
+            print(f"[HWDebug] get_health_data error: {e}")
+
         return None
     
     def manual_refresh(self, instance):
@@ -492,6 +487,7 @@ class HardwareDebugPage(Screen):
         threading.Thread(target=run_update, daemon=True).start()
 
     def go_back(self, instance):
-        """Go back to payment method page"""
-        print("⬅️ Returning to payment method page")
-        self.manager.current = 'payment_method'
+        """Go back to home page"""
+        print("⬅️ Returning to home page")
+        from kivy.app import App
+        App.get_running_app().show_payment_method_page()

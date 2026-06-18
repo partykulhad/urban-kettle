@@ -34,6 +34,11 @@ COMMAND_HISTORY_TTL_HOURS = 24
 # Thread-safe lock
 lock = threading.Lock()
 
+# Per-command result notification events — set by command_result() so send_command()
+# wakes immediately instead of busy-polling every 500 ms for up to 60 seconds.
+command_result_events = {}       # command_id -> threading.Event
+command_result_events_lock = threading.Lock()
+
 def prune_command_history():
     """Remove old command history entries to prevent memory leak"""
     global command_history
@@ -333,15 +338,40 @@ def command_result():
         if device_id in devices:
             devices[device_id]['last_seen'] = datetime.now().isoformat()
 
-        # If this is a health check result, also append it to health_history
+        # If this is a health check result, also append it to health_history.
+        # Handle both flat format (messageType=health_check, checks at top level)
+        # and nested format (messageType=command_response, checks under response/data).
         message_type = request_data.get('messageType')
-        if message_type == 'health_check' or 'checks' in request_data:
+        _resp = request_data.get('response', {}) or {}
+        _has_checks = (
+            'checks' in request_data
+            or 'checks' in _resp
+            or 'checks' in (_resp.get('data') or {})
+            or 'checks' in (request_data.get('data') or {})
+        )
+        if message_type == 'health_check' or _has_checks:
             if device_id not in health_history:
                 health_history[device_id] = []
             health_entry = { 'timestamp': datetime.now().isoformat(), 'data': request_data }
             health_history[device_id].append(health_entry)
             if len(health_history[device_id]) > 100:
                 health_history[device_id] = health_history[device_id][-100:]
+
+        # Resolve which commandId owns the result (may be inferred above)
+        resolved_cid = command_id
+        if not resolved_cid or resolved_cid not in command_history:
+            for cid, hist in command_history.items():
+                if hist.get('result') is request_data:
+                    resolved_cid = cid
+                    break
+
+    # Wake up any send_command() thread waiting on this command so it returns
+    # immediately rather than spinning for up to 60 s.
+    if resolved_cid:
+        with command_result_events_lock:
+            event = command_result_events.get(resolved_cid)
+        if event:
+            event.set()
 
     # Acknowledgment
     response_data = {
@@ -629,20 +659,25 @@ def send_command():
         command_history[command_id]['command'] = request_data
         command_history[command_id]['status'] = 'queued'
 
-    # Wait for ESP32 to process the command and return result
-    timeout_seconds = 60.0  # Max wait time
-    poll_interval = 0.5     # Check every 500ms
-    start_time = time.time()
+    # Wait for ESP32 to process the command and return result.
+    # Event-based: command_result() wakes the event immediately when ESP32 responds,
+    # freeing this Waitress thread instead of busy-polling every 500 ms for 60 s.
+    timeout_seconds = 35.0
+    result_event = threading.Event()
+    with command_result_events_lock:
+        command_result_events[command_id] = result_event
 
-    while time.time() - start_time < timeout_seconds:
-        with lock:
-            if command_id in command_history and 'result' in command_history[command_id]:
-                # ESP has responded with result
-                esp_result = command_history[command_id]['result']
-                log_json('/api/send_command', 'RESPONSE (ESP Result)', esp_result)
-                return jsonify(esp_result), 200
+    try:
+        result_event.wait(timeout=timeout_seconds)
+    finally:
+        with command_result_events_lock:
+            command_result_events.pop(command_id, None)
 
-        time.sleep(poll_interval)
+    with lock:
+        if command_id in command_history and 'result' in command_history[command_id]:
+            esp_result = command_history[command_id]['result']
+            log_json('/api/send_command', 'RESPONSE (ESP Result)', esp_result)
+            return jsonify(esp_result), 200
 
     # Timeout - command didn't complete in time
     timeout_data = {
@@ -679,29 +714,54 @@ def get_cached_temperature(device_id):
         return jsonify({"error": "No health data yet"}), 404
 
     last_health = history[-1].get('data', {})
-
-    # Health data may be nested under 'data' key (ESP32 wraps payload)
-    payload = last_health.get('data', last_health)
-    checks = payload.get('checks', {})
-    machine_state = payload.get('machineState', 'UNKNOWN')
     timestamp = history[-1].get('timestamp')
+
+    # Normalise: ESP32 may send checks at top level OR nested under 'response'/'data'.
+    # Try each location in order so any firmware variant works.
+    def _find_checks(d):
+        if not isinstance(d, dict):
+            return None, 'UNKNOWN'
+        if 'checks' in d:
+            return d['checks'], d.get('machineState', 'UNKNOWN')
+        for sub_key in ('response', 'data'):
+            sub = d.get(sub_key)
+            if isinstance(sub, dict) and 'checks' in sub:
+                return sub['checks'], sub.get('machineState', d.get('machineState', 'UNKNOWN'))
+        return None, d.get('machineState', 'UNKNOWN')
+
+    checks, machine_state = _find_checks(last_health)
+    if not checks:
+        checks, machine_state = _find_checks(last_health.get('data', {}))
+    checks = checks or {}
 
     pt100_temp = None
     for key, val_list in checks.items():
-        if 'pt100' in key and val_list:
+        if 'pt100' in key.lower() and val_list:
             pt100_temp = val_list[0].get('observedValue')
             break
 
     ktype_temp = None
     for key, val_list in checks.items():
-        if 'ktype' in key and val_list:
+        if 'ktype' in key.lower() and val_list:
             ktype_temp = val_list[0].get('observedValue')
+            break
+
+    # Water level — ESP32 sends this via sensor:ultrasonic_sensor_01.
+    # observedValue is the cups-equivalent level calculated by firmware.
+    water_level = None
+    water_level_unit = None
+    for key, val_list in checks.items():
+        if 'ultrasonic' in key.lower() and val_list:
+            water_level = val_list[0].get('observedValue')
+            water_level_unit = val_list[0].get('unit', 'cups')
             break
 
     return jsonify({
         "deviceId": device_id,
         "pt100_temperature": pt100_temp,
         "ktype_temperature": ktype_temp,
+        "water_level": water_level,
+        "water_level_unit": water_level_unit,
         "machineState": machine_state,
         "timestamp": timestamp,
         "source": "cached_health"
@@ -817,12 +877,17 @@ if __name__ == '__main__':
     pruning_thread.start()
     print("🧹 Command history pruning enabled (max 1000 entries, 24-hour TTL)")
 
-    # use_reloader=False prevents the double-startup issue in threaded mode.
-    # The default Werkzeug dev server sends Connection:close on every response,
-    # which causes urllib3 to log "[Resetting dropped connection]" on every
-    # health-check POST.  Overriding the protocol version to HTTP/1.1 enables
-    # persistent keep-alive connections and eliminates that noise.
-    from werkzeug.serving import WSGIRequestHandler
-    WSGIRequestHandler.protocol_version = "HTTP/1.1"
-
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True, use_reloader=False)
+    # Use Waitress as the production WSGI server instead of Flask's dev server.
+    # The /api/device/command endpoint blocks for up to 60s waiting for ESP32 to
+    # respond, which exhausts Flask's single-threaded Werkzeug dev server quickly.
+    # Waitress maintains a configurable thread pool (threads=16 here) so multiple
+    # long-blocking requests can be served in parallel without starving health checks.
+    try:
+        from waitress import serve
+        print("🚀 Starting Waitress WSGI server on port 5000 (threads=16)...")
+        serve(app, host='0.0.0.0', port=5000, threads=16)
+    except ImportError:
+        print("⚠️  waitress not installed — falling back to Flask dev server (install with: pip install waitress)")
+        from werkzeug.serving import WSGIRequestHandler
+        WSGIRequestHandler.protocol_version = "HTTP/1.1"
+        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True, use_reloader=False)

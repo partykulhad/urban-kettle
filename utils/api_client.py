@@ -34,6 +34,7 @@ class ApiClient:
         self.REDUCE_CUPS_API_URL = "https://kulhad.vercel.app/api/reduce-cups"
         self.RFID_VALIDATE_API_URL = "https://tea-wallet-prasadthirtha.replit.app/api/rfid/validate"
         self.CANISTER_CHECK_API_URL = "https://kulhad.vercel.app/api/canister-check"
+        self.WATER_LEVEL_API_URL = "https://kulhad.vercel.app/api/water-level"
         from config import POLLING_SERVER_URL
         self.HARDWARE_COMMAND_URL = f"{POLLING_SERVER_URL}/api/device/command"
         # Use persistent session for connection pooling
@@ -161,7 +162,8 @@ class ApiClient:
             response = self.session.post(
                 self.CANCEL_API_URL,
                 data=json.dumps(payload),
-                headers=headers
+                headers=headers,
+                timeout=10
             )
             
             if response.status_code == 200:
@@ -177,6 +179,35 @@ class ApiClient:
             print(f"Error cancelling payment: {e}")
             return None
     
+    def report_machine_status(self, machine_id, status):
+        """Report machine online/offline status to the Kulhad backend.
+        Args:
+            machine_id: e.g. 'UKL_BLR_004'
+            status: 'online' or 'offline'
+        """
+        try:
+            url = f"https://kulhad.vercel.app/api/updateMachineStatus"
+            payload = {"machineId": machine_id, "status": status}
+            response = self.session.post(url, json=payload, timeout=5)
+            if response.status_code == 200:
+                print(f"✅ [Status] Reported machine {machine_id} → {status}")
+                return response.json()
+            elif response.status_code == 404:
+                # Endpoint may not exist yet — try MachinesStatus with POST
+                url2 = f"https://kulhad.vercel.app/api/MachinesStatus"
+                r2 = self.session.post(url2, json=payload, timeout=5)
+                if r2.status_code == 200:
+                    print(f"✅ [Status] Reported via MachinesStatus: {machine_id} → {status}")
+                    return r2.json()
+                print(f"⚠️ [Status] Both status endpoints returned {r2.status_code} — "
+                      f"kulhad may not support machine state reporting yet")
+            else:
+                print(f"⚠️ [Status] report_machine_status HTTP {response.status_code}: {response.text[:200]}")
+            return None
+        except Exception as e:
+            print(f"⚠️ [Status] report_machine_status error: {e}")
+            return None
+
     def check_machine_status(self, machine_id):
         """Check machine status (online/offline)"""
         try:
@@ -222,9 +253,22 @@ class ApiClient:
             )
             if response.status_code == 200:
                 result = response.json()
-                print(f"Remaining cups: {result.get('cups')} (machine: {machine_id})")
+                print(f"Remaining cups API full response: {result}")
+                # Normalize: callers always read result.get("cups", 0).
+                # The API may return the count under different key names;
+                # search common variants and write it back as "cups".
+                if "cups" not in result:
+                    for alt_key in ("remainingCups", "cupsRemaining", "remaining_cups",
+                                    "cupsCount", "cups_count", "count"):
+                        if alt_key in result:
+                            result["cups"] = result[alt_key]
+                            print(f"  ↳ normalized '{alt_key}' → 'cups' = {result['cups']}")
+                            break
+                    else:
+                        # No known key found — log all keys so we can fix it
+                        print(f"  ⚠️ 'cups' key not found in response. Available keys: {list(result.keys())}")
                 return result
-            print(f"Failed to get remaining cups: {response.status_code}")
+            print(f"Failed to get remaining cups: {response.status_code} — {response.text[:300]}")
             return None
         except Exception as e:
             print(f"Error getting remaining cups: {e}")
@@ -250,6 +294,13 @@ class ApiClient:
             if response.status_code == 200:
                 result = response.json()
                 print(f"Cups reduction result: {result}")
+                # Same normalization as get_remaining_cups — callers read result.get("cups")
+                if "cups" not in result:
+                    for alt_key in ("remainingCups", "cupsRemaining", "remaining_cups",
+                                    "cupsCount", "cups_count", "count"):
+                        if alt_key in result:
+                            result["cups"] = result[alt_key]
+                            break
                 return result
             else:
                 print(f"Failed to reduce cups: {response.status_code}")
@@ -261,25 +312,31 @@ class ApiClient:
     
     def validate_rfid_card_aes(self, rfid_auth_handler):
         """
-        Validate RFID card using AES authentication
-        Uses the new secure authentication flow
+        Validate RFID card using AES authentication.
+        Returns the raw result dict from authenticate_and_dispense so the
+        caller can inspect all fields (cardCategory, remainingBalance, etc.).
         """
         try:
             print(f"🔐 Starting AES authentication...")
-            
-            # Process card with AES authentication
             result = rfid_auth_handler.process_card()
-            
-            if result.get('success') and result.get('authenticated') and result.get('dispensed'):
+
+            print(f"🔍 RFID auth raw result: {result}")
+
+            if result.get('success') and result.get('authenticated'):
+                # Server confirmed this card is valid and authenticated.
+                # 'dispensed' is a server-side billing flag — don't gate on it;
+                # the machine controls the physical dispense.
                 print(f"✅ Authentication successful!")
                 print(f"   Card: {result.get('cardId')}")
                 print(f"   Balance: ₹{result.get('remainingBalance')}")
                 print(f"   Location: {result.get('machineLocation')}")
-                return result
+                print(f"   Dispensed flag from server: {result.get('dispensed')}")
             else:
                 print(f"❌ Authentication failed: {result.get('error', 'Unknown error')}")
-                return result
-                
+                print(f"   success={result.get('success')}, authenticated={result.get('authenticated')}, dispensed={result.get('dispensed')}")
+
+            return result
+
         except Exception as e:
             print(f"Error in AES authentication: {e}")
             return {"success": False, "error": str(e)}
@@ -321,6 +378,39 @@ class ApiClient:
             print(f"❌ Error sending canister alert: {e}")
             return None
 
+    def report_water_level(self, machine_id, water_level_low):
+        """Report the ESP32's waterLevelLow flag to Kulhad.
+        water_level_low=True  → tank is low, Kulhad alerts staff and flags the machine.
+        water_level_low=False → tank refilled, Kulhad clears the flag (no alert).
+        """
+        try:
+            payload = {
+                "machineId": machine_id,
+                "waterLevelLow": water_level_low
+            }
+            headers = {"Content-Type": "application/json"}
+
+            print(f"💧 Reporting waterLevelLow={water_level_low} for machine {machine_id}")
+
+            response = self.session.post(
+                self.WATER_LEVEL_API_URL,
+                data=json.dumps(payload),
+                headers=headers,
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                print(f"✅ Water level reported successfully: {result.get('machineName')}")
+                return result
+            else:
+                print(f"❌ Failed to report water level: {response.status_code}")
+                print(f"   Error: {response.text}")
+                return None
+        except Exception as e:
+            print(f"❌ Error reporting water level: {e}")
+            return None
+
     def send_hardware_command(self, device_id, action, parameters=None):
         """Send a command to the hardware via the polling server"""
         try:
@@ -354,14 +444,12 @@ class ApiClient:
 
             session = get_localhost_session()
 
-            # Flush commands are fire-and-forget: the polling server queues the
-            # command immediately, then blocks up to 30 s waiting for the ESP32
-            # to POST back a completion result.  Since a flush takes 20 s and
-            # the ESP32 poll cycle can be up to 30 s, the server almost always
-            # returns HTTP 504 before the ESP32 finishes.  We use a 10-second
-            # client timeout — enough for the command to be queued — then accept
-            # the timeout/504 as proof that the command is dispatched.
-            # Wait up to 35 seconds for the ESP32 to execute the command and return a result
+            # Flush commands block up to 30 s on the polling server side waiting
+            # for the ESP32 to POST back a completion result.  Since a flush
+            # takes ~20 s and the ESP32 poll cycle can be up to 30 s, the server
+            # usually returns HTTP 504 before the ESP32 finishes.  Use a 35 s
+            # client timeout — just over the server's 30 s wait — so the 504
+            # reaches the client cleanly and is treated as "dispatched".
             client_timeout = 35
 
             try:

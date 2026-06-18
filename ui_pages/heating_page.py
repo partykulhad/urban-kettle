@@ -252,12 +252,12 @@ class HeatingPage(Screen):
                 validation_result = app.api_client.validate_rfid_card_aes(app.rfid_auth_handler)
                 
                 if validation_result and validation_result.get("cardCategory") == "maintenance":
-                    # Maintenance card - process it
+                    # Maintenance card - process it (open solenoid/lock)
                     print("🔧 Maintenance Card Detected on heating page")
                     Clock.schedule_once(lambda dt: self._handle_maintenance_card(validation_result), 0)
                 else:
-                    # Not a maintenance card - ignore and restart polling
-                    print("⚠️ Non-maintenance card on heating page - ignoring")
+                    # Not a maintenance card — ignore and restart polling
+                    print("⚠️ Non-maintenance card on heating page — ignoring")
                     Clock.schedule_once(lambda dt: self._restart_polling_after_delay(), 0)
         except Exception as e:
             print(f"❌ RFID error on heating page: {e}")
@@ -291,12 +291,12 @@ class HeatingPage(Screen):
     def _send_maintenance_solenoid_command(self, duration_ms=10000):
         """Send solenoid control command for maintenance card"""
         try:
-            from config import DEVICE_ID
+            from config import DEVICE_ID, POLLING_SERVER_URL
             from utils.api_client import get_localhost_session
             import json
-            
+
             session = get_localhost_session()
-            
+
             command_payload = {
                 "messageType": "command",
                 "commandType": "control",
@@ -310,11 +310,11 @@ class HeatingPage(Screen):
                     }
                 }
             }
-            
+
             print(f"🔧 Sending maintenance solenoid command (heating page): {duration_ms}ms")
-            
+
             response = session.post(
-                "http://localhost:5000/api/device/command",
+                f"{POLLING_SERVER_URL}/api/device/command",
                 json=command_payload,
                 timeout=35
             )
@@ -330,6 +330,34 @@ class HeatingPage(Screen):
     def _restart_polling_after_delay(self):
         """Restart RFID polling after a short delay"""
         Clock.schedule_once(lambda dt: self.start_rfid_polling(), 2)
+
+    def _show_heating_message(self):
+        """Show a 'water is still heating' message when a valid dispensing card
+        is tapped while the machine has not yet reached serving temperature.
+        Uses the rfid_auth_page so the user gets clear visual feedback that
+        their card WAS recognised — they just need to wait.
+        """
+        from kivy.app import App
+        app = App.get_running_app()
+
+        # Navigate to RFID auth page and display the waiting message
+        if hasattr(app, 'rfid_auth_page'):
+            app.rfid_auth_page.show_error(
+                "Water is still heating\nPlease wait and tap again\nwhen the machine is ready"
+            )
+            app.show_page('rfid_auth')
+
+        # Return to heating page and resume polling after 3 s
+        Clock.schedule_once(lambda dt: self._return_to_heating(), 3)
+
+    def _return_to_heating(self):
+        """Navigate back to the heating page and re-enable RFID polling."""
+        from kivy.app import App
+        app = App.get_running_app()
+        app.show_page('heating')
+        # Restart polling so the next card tap is detected
+        Clock.schedule_once(lambda dt: self.start_rfid_polling(), 0.5)
+
 
     def _on_skip_tap(self, instance):
         """Hidden 3-tap skip — bypasses heating check during testing"""

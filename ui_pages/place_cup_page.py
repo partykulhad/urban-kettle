@@ -282,6 +282,8 @@ class PlaceCupPage(Screen):
             print(f"🔧 Pump duration: {ml} ml → {pump_duration_ms} ms")
 
             # Prepare the request payload
+            # pumpOperationDuration is NOT sent here per schema §7.1 — ESP32 uses
+            # the value synced via handshake config and update_pump_settings (§7.3).
             payload = {
                 "messageType": "command",
                 "commandType": "control",
@@ -291,8 +293,7 @@ class PlaceCupPage(Screen):
                 "command": {
                     "action": "start_dispense",
                     "parameters": {
-                        "jobId": job_id,
-                        "pumpOperationDuration": pump_duration_ms
+                        "jobId": job_id
                     }
                 }
             }
@@ -319,13 +320,22 @@ class PlaceCupPage(Screen):
                 print(f"✓ Response JSON:")
                 print(json.dumps(result, indent=2))
                 
-                # Get the status code from ESP32 response
-                esp_status_code = result.get('response', {}).get('statusCode', 200)
-                status = result.get('response', {}).get('status')
-                
-                print(f"\n✅ DISPENSE COMMAND SUCCESSFUL!")
+                # Get the status code from ESP32 response.
+                # ESP32 firmware may return statusCode at the top level OR nested
+                # under a 'response' key — check both so temperature errors (700/701)
+                # are never misread as success (200 default).
+                nested = result.get('response', {})
+                nested_code = nested.get('statusCode')
+                flat_code = result.get('statusCode')
+                esp_status_code = (nested_code if nested_code is not None
+                                   else (flat_code if flat_code is not None
+                                         else 200))
+                status = nested.get('status') or result.get('status')
+
+                print(f"\n✅ DISPENSE COMMAND RECEIVED!")
                 print(f"   Response Status: {status}")
-                print(f"   ESP32 Status Code: {esp_status_code}")
+                print(f"   ESP32 Status Code: {esp_status_code} "
+                      f"(nested={nested_code}, flat={flat_code})")
                 print(f"   Command ID: {result.get('commandId')}")
                 print("="*80)
                 
@@ -423,7 +433,7 @@ class PlaceCupPage(Screen):
                 # Third error - go to home page
                 print(f"❌ Third error popup - returning to home page")
                 app = App.get_running_app()
-                Clock.schedule_once(lambda dt: app.show_page('payment_method'), 0.5)
+                Clock.schedule_once(lambda dt: app.show_payment_method_page(), 0.5)
             else:
                 # First or second error - stay on page, reset timer, allow retry
                 print(f"⚠️ Error popup {self.error_popup_count}/3 - staying on page, resetting timer")
@@ -525,12 +535,15 @@ class PlaceCupPage(Screen):
         """Return to home page with message"""
         print(f"🏠 Returning to home: {reason}")
         self.stop_page_timeout()
-        
+
         # Reset debouncing flags
         self.button_pressed = False
         self.dispense_in_progress = False
-        
+
         app = App.get_running_app()
+        # Order aborted — release the dispensing guard so machine_empty can show
+        # if cups hit 0 after this timeout (guard was set in start_dispensing_process).
+        app._dispensing_cups = False
         Clock.schedule_once(lambda dt: app.show_payment_method_page(), 0)
     
     def on_continue_pressed(self, instance):
@@ -566,32 +579,43 @@ class PlaceCupPage(Screen):
         # print("✅ Navigating to dispensing page immediately")
         # Clock.schedule_once(lambda dt: app.start_dispensing_current_cup(), 0)
         
-        # STATUS CODE APPROACH: Send dispense command and wait for 200 status code
+        # HYBRID APPROACH:
+        # 1. Pre-flight temp check (fast, ~100ms from cache)
+        # 2. If temp OK → navigate to dispensing immediately (smooth UX)
+        # 3. Send dispense command in background
+        # 4. Handle hardware errors (700/701) even after navigating away
         def send_command_and_wait():
-            print("🔄 Sending dispense command and waiting for status code...")
+            # Temperature was already checked before QR generation.
+            # Once the user has paid, let the dispense proceed — the ESP32
+            # enforces its own temperature floor (allows from ~78.5°C).
+            # Reduce cups and navigate to dispensing IMMEDIATELY
+            # so the user sees the animation straight away without waiting for the
+            # ESP32 poll cycle (which can take up to 30s).
+            app.reduce_one_cup()
+            Clock.schedule_once(lambda dt: app.start_dispensing_current_cup(), 0)
+
+            # Now send the dispense command (ESP32 picks it up on next poll cycle).
+            print("🔄 Sending dispense command in background...")
             success, status_code, response_data = self.send_dispense_command()
 
             if success and status_code == 200:
-                print(f"✅ Status code 200 - reducing 1 cup and navigating to dispensing page")
-                app.reduce_one_cup()
-                Clock.schedule_once(lambda dt: app.start_dispensing_current_cup(), 0)
+                print(f"✅ Dispense command confirmed (200)")
             elif status_code in [700, 701]:
-                # Temperature errors — route to heating page via main app
-                self.button_pressed = False
-                self.dispense_in_progress = False
-                Clock.schedule_once(lambda dt: app.handle_dispense_error(status_code), 0)
+                # Temperature warning from ESP32 — but user has already paid and
+                # dispensing is in progress; the ESP32 allows ~78.5°C so just log it.
+                print(f"ℹ️ ESP32 temp code {status_code} — dispensing already started, ignoring")
             elif status_code in [704, 705, 706, 707, 708, 711]:
-                # Hardware fault errors — show popup and allow retry
-                print(f"⚠️ Technical error {status_code} - showing popup")
-                Clock.schedule_once(lambda dt: self.show_technical_error_popup(status_code), 0)
+                # Hardware fault — route through central handler (shows hardware error page)
+                print(f"⚠️ Hardware error {status_code} returned from ESP32")
                 self.button_pressed = False
                 self.dispense_in_progress = False
+                if getattr(app.dispensing_page, 'completion_handled', False):
+                    print(f"⚠️ Stale {status_code} — dispense already completed, ignoring")
+                else:
+                    Clock.schedule_once(lambda dt: app.handle_dispense_error(status_code), 0)
             else:
-                # Other error - show generic error and reset
-                print(f"❌ Error status code {status_code} - showing error popup")
-                Clock.schedule_once(lambda dt: self.show_technical_error_popup(status_code or 999), 0)
-                self.button_pressed = False
-                self.dispense_in_progress = False
+                if not success:
+                    print(f"❌ Dispense command failed (status={status_code}) — ESP32 will still run via timeout")
         
         threading.Thread(target=send_command_and_wait, daemon=True).start()
         print("="*80 + "\n")
@@ -601,9 +625,6 @@ class PlaceCupPage(Screen):
         """Called when page is entered"""
         import time
         # Reset state (but not if dispense is in progress)
-        if not hasattr(self, 'dispense_in_progress'):
-            self.dispense_in_progress = False
-        
         if self.dispense_in_progress:
             print("⏸️ Dispense in progress - skipping timeout initialization")
             return

@@ -36,6 +36,21 @@ pkill -f polling_server2.py 2>/dev/null || true
 pkill -f main_app.py        2>/dev/null || true
 sleep 1
 
+# ── Ensure pcscd is running (required for ACR122U RFID reader via pyscard) ───
+echo "Checking pcscd (RFID smartcard daemon)..."
+if systemctl is-active --quiet pcscd 2>/dev/null; then
+    echo "✓ pcscd already running"
+else
+    echo "▶ Starting pcscd..."
+    sudo systemctl start pcscd 2>/dev/null || true
+    sleep 1
+    if systemctl is-active --quiet pcscd 2>/dev/null; then
+        echo "✓ pcscd started"
+    else
+        echo "⚠️  pcscd could not be started — RFID card reader may not work"
+    fi
+fi
+
 # ── Activate virtualenv if present ───────────────────────────────────────────
 if [ -d "$APP_DIR/venv" ]; then
     source "$APP_DIR/venv/bin/activate"
@@ -61,12 +76,19 @@ echo "Starting polling server (ESP32 bridge)..."
 "$PYTHON" "$APP_DIR/polling_server2.py" > "$APP_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 
-# Wait up to 8s for backend to be ready
-for i in $(seq 1 8); do
+# Wait until Flask responds on :5000 (up to 15s) — process-alive check is not enough
+BACKEND_READY=0
+for i in $(seq 1 15); do
     sleep 1
-    kill -0 "$BACKEND_PID" 2>/dev/null || { echo "❌ Backend failed — check backend.log"; exit 1; }
+    kill -0 "$BACKEND_PID" 2>/dev/null || { echo "❌ Backend crashed — check backend.log"; exit 1; }
+    if curl -sf "http://localhost:5000/health" > /dev/null 2>&1 \
+    || curl -sf "http://localhost:5000/api/status" > /dev/null 2>&1; then
+        echo "✅ Backend ready and responding on :5000 (${i}s, PID=$BACKEND_PID)"
+        BACKEND_READY=1
+        break
+    fi
 done
-echo "✅ Backend running (PID=$BACKEND_PID)"
+[ "$BACKEND_READY" -eq 0 ] && echo "⚠️ Backend not responding on :5000 after 15s — starting frontend anyway"
 
 # ── Start frontend ────────────────────────────────────────────────────────────
 echo "Starting UI (main_app.py)..."

@@ -153,7 +153,7 @@ class RFIDAuthPage(Screen):
         # Navigate back to payment method page after 1.5 seconds
         from kivy.app import App
         app = App.get_running_app()
-        Clock.schedule_once(lambda dt: app.show_page('payment_method'), 1.5)
+        Clock.schedule_once(lambda dt: app.show_payment_method_page(), 1.5)
         
         # Restart RFID polling
         if hasattr(app, 'payment_method_page') and hasattr(app.payment_method_page, 'restart_rfid_after_auth'):
@@ -173,7 +173,11 @@ class RFIDAuthPage(Screen):
         self.icon_label.text = '✅'
         self.status_label.text = 'Authentication Successful!'
         self.status_label.color = (0.18, 0.8, 0.44, 1)  # Green
-        self.step_label.text = f'Balance: ₹{balance}'
+        try:
+            float(balance)
+            self.step_label.text = f'Balance: ₹{balance}'
+        except (TypeError, ValueError):
+            self.step_label.text = str(balance)
         elapsed = Clock.get_time() - self.start_time
         self.timer_label.text = f'Completed in {elapsed:.1f}s'
     
