@@ -11,7 +11,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CURRENT_USER="$(whoami)"
 REPO_URL="https://github.com/partykulhad/urban-kettle.git"
 SERVICE="urban-kettle"
-CRON_LINE="0 * * * * $REPO_DIR/update.sh"
+CRON_LINE="*/5 * * * * $REPO_DIR/update.sh"
 
 echo "==> Stopping $SERVICE (if running)..."
 sudo systemctl stop "$SERVICE" 2>/dev/null || true
@@ -61,7 +61,7 @@ echo "==> Granting passwordless restart permission for cron (NOPASSWD sudoers en
 echo "$CURRENT_USER ALL=(ALL) NOPASSWD: /bin/systemctl restart $SERVICE" | sudo tee /etc/sudoers.d/urban-kettle-restart > /dev/null
 sudo chmod 440 /etc/sudoers.d/urban-kettle-restart
 
-echo "==> Installing hourly cron job (idempotent — won't duplicate on re-run)..."
+echo "==> Installing 5-minute cron job (idempotent — won't duplicate on re-run)..."
 ( crontab -l 2>/dev/null | grep -vF "$REPO_DIR/update.sh" ; echo "$CRON_LINE" ) | crontab -
 
 echo "==> Starting $SERVICE..."

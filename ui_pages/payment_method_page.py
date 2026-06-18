@@ -1347,9 +1347,17 @@ class PaymentMethodPage(Screen):
             
             # Keep RFID disabled - user is proceeding to dispensing
             # Polling will be stopped by on_leave() when navigating away
-            
-            # Navigate to dispensing after showing success
-            Clock.schedule_once(lambda dt: self.navigate_to_dispensing(), 1.5)
+
+            # Check temperature before dispensing — same guard the UPI flow has
+            # (selection_page._check_temp_before_qr). Without this, an RFID
+            # customer could be sent straight to place_cup/dispensing on cold
+            # water with no heating page ever shown.
+            Clock.schedule_once(
+                lambda dt: threading.Thread(
+                    target=self._check_temp_before_rfid_dispense, args=(app,), daemon=True
+                ).start(),
+                1.5
+            )
         else:
             # Authentication failed - determine specific error message
             print("❌ AES Authentication failed")
@@ -1385,6 +1393,34 @@ class PaymentMethodPage(Screen):
         from kivy.app import App
         app = App.get_running_app()
         app.show_dispensing_page()
+
+    def _check_temp_before_rfid_dispense(self, app):
+        """Background: read cached temp; if below serving temp, heat before dispensing.
+        Mirrors selection_page._check_temp_before_qr — the RFID flow previously had
+        no temperature check at all before sending the customer to place_cup/dispensing.
+        """
+        from config import SERVING_TEMP, DEVICE_ID, POLLING_SERVER_URL
+        from utils.api_client import get_localhost_session
+        cached_temp = None
+        try:
+            _r = get_localhost_session().get(
+                f"{POLLING_SERVER_URL}/api/device/{DEVICE_ID}/temperature",
+                timeout=2
+            )
+            if _r.status_code == 200:
+                _t = _r.json().get('pt100_temperature')
+                if _t is not None and -10 <= float(_t) <= 120:
+                    cached_temp = float(_t)
+        except Exception:
+            pass
+
+        if cached_temp is not None and cached_temp < SERVING_TEMP:
+            print(f"🌡 Pre-dispense temp check (RFID): {cached_temp:.1f}°C < {SERVING_TEMP}°C "
+                  f"— heating before dispensing")
+            app._pending_rfid_dispense_after_heating = True
+            Clock.schedule_once(lambda dt: app.show_heating_page(cached_temp), 0)
+        else:
+            Clock.schedule_once(lambda dt: self.navigate_to_dispensing(), 0)
     
     def send_maintenance_solenoid_command(self, duration_ms=10000):
         """Send solenoid control command for maintenance card"""

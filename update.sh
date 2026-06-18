@@ -1,6 +1,6 @@
 #!/bin/bash
 # Urban Kettle — pull-based auto-update.
-# Run by cron every hour (see README/instructions). Only touches the running
+# Run by cron every 5 minutes (see README/instructions). Only touches the running
 # kiosk if a new commit is actually available — never restarts on a no-op
 # check, since that would interrupt a customer mid-order for nothing.
 set -euo pipefail

@@ -91,6 +91,9 @@ class ChaiOrderingApp(App):
         # Set to cup count when user confirmed order but temp is low — heating page
         # should generate QR and show payment page when done, not go home.
         self._pending_cups_after_heating = None
+        # True when an RFID customer authenticated but temp was low — heating page
+        # should go straight to dispensing (place_cup) when done, not a payment page.
+        self._pending_rfid_dispense_after_heating = False
 
         # *** Dispense volume (from Kulhad getMachineData) ***
         self.ml_to_dispense = 100   # Default ml per cup; overridden by API on startup
@@ -290,6 +293,7 @@ class ChaiOrderingApp(App):
         the machine is cleaning itself.
         """
         self._pending_cups_after_heating = None  # safety reset
+        self._pending_rfid_dispense_after_heating = False  # safety reset
 
         # Cups were just refilled — run refill flush before going to selection.
         if getattr(self, '_pending_refill_flush', False):
@@ -2076,7 +2080,12 @@ class ChaiOrderingApp(App):
             if temp >= SERVING_TEMP:
                 self.stop_heating_monitor()
                 pending_cups = getattr(self, '_pending_cups_after_heating', None)
-                if pending_cups is not None:
+                pending_rfid = getattr(self, '_pending_rfid_dispense_after_heating', False)
+                if pending_rfid:
+                    print(f"✅ Tea ready at {temp:.1f}°C - RFID customer already authenticated, proceeding to dispensing")
+                    self._pending_rfid_dispense_after_heating = False
+                    self.show_dispensing_page()
+                elif pending_cups is not None:
                     print(f"✅ Tea ready at {temp:.1f}°C - proceeding to QR for {pending_cups} cups")
                     self._pending_cups_after_heating = None
                     self.show_payment_page(pending_cups)
