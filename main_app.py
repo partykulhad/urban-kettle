@@ -983,6 +983,11 @@ class ChaiOrderingApp(App):
             Clock.schedule_once(
                 lambda dt: self.show_payment_method_page(fetch_cups=True), 1
             )
+            # Re-arm for the next idle interval — without this, the machine only
+            # ever flushes once (after the dispense that triggered it) and then
+            # never again no matter how much longer it sits idle. A real new
+            # order (show_payment_page) still cancels this via cancel_auto_flush().
+            Clock.schedule_once(lambda dt: self.schedule_auto_flush(), 1.1)
 
     # *** REFILL FLUSH (triggered when cups restocked from 0) ***
 
