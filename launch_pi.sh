@@ -11,6 +11,7 @@ APP_DIR="$(pwd)"
 echo "========================================"
 echo "   Urban Kettle — Starting"
 echo "   Dir: $APP_DIR"
+echo "   Build marker: deploy-test-001"
 echo "========================================"
 
 # ── Wait for X display ────────────────────────────────────────────────────────
