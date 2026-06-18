@@ -341,12 +341,12 @@ class ApiClient:
             print(f"Error in AES authentication: {e}")
             return {"success": False, "error": str(e)}
     
-    def check_canister_level(self, machine_id, canister_level=5):
+    def check_canister_level(self, machine_id, canister_level):
         """
-        Send canister level alert when cups reach critical level (5 cups)
+        Send canister level alert when cups reach the alert threshold.
         Args:
             machine_id: Machine ID (e.g., 'KH-01')
-            canister_level: Always send 5 as per requirement
+            canister_level: The cup count to report (caller passes CANISTER_ALERT_THRESHOLD)
         """
         try:
             payload = {

@@ -306,7 +306,7 @@ class SelectionPage(Screen):
                 source=logo_path,
                 size_hint=(None, None),
                 size=(260, 230),
-                pos_hint={'x': 0.0, 'top': 1.35},  # Same as payment_method_page
+                pos_hint={'x': 0.0, 'top': 1.20},  # Same as payment_method_page
                 allow_stretch=True,
                 keep_ratio=True
             )

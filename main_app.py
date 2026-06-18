@@ -1133,7 +1133,7 @@ class ChaiOrderingApp(App):
         # Check if cups are at the canister-low alert threshold and alert hasn't been sent
         from config import CANISTER_ALERT_THRESHOLD, MACHINE_EMPTY_THRESHOLD
         print(f"🔍 DEBUG: count={count}, canister_alert_sent={self.canister_alert_sent}")
-        if count == CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
+        if count <= CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
             print(f"🔔 Cups are at {CANISTER_ALERT_THRESHOLD}! Sending canister alert...")
             self.send_canister_alert()
             self.canister_alert_sent = True
@@ -1189,7 +1189,7 @@ class ChaiOrderingApp(App):
 
             # Check if cups reached the canister-low alert threshold and alert hasn't been sent
             print(f"🔍 DEBUG: after decrement count={count}, canister_alert_sent={self.canister_alert_sent}")
-            if count == CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
+            if count <= CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
                 print(f"🔔 Cups reached {CANISTER_ALERT_THRESHOLD} after dispensing! Sending canister alert...")
                 self.send_canister_alert()
                 self.canister_alert_sent = True
@@ -1233,13 +1233,14 @@ class ChaiOrderingApp(App):
         threading.Thread(target=fetch_in_background, daemon=True).start()
     
     def send_canister_alert(self):
-        """Send canister level alert when cups reach 5"""
+        """Send canister level alert when cups reach the alert threshold"""
+        from config import CANISTER_ALERT_THRESHOLD
         print(f"🔔 DEBUG: send_canister_alert() called for machine {self.MACHINE_ID}")
-        
+
         def send_alert_in_background():
             try:
                 print(f"🔔 DEBUG: Calling API check_canister_level()...")
-                result = self.api_client.check_canister_level(self.MACHINE_ID, canister_level=5)
+                result = self.api_client.check_canister_level(self.MACHINE_ID, canister_level=CANISTER_ALERT_THRESHOLD)
                 if result:
                     print(f"✅ DEBUG: Canister alert API call successful")
                 else:
