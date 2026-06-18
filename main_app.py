@@ -957,9 +957,9 @@ class ChaiOrderingApp(App):
             # ── 10 s pause (show live countdown on flush page) ───────────────
             print("⏳ [Flush] Waiting 10 s before tea flush...")
             Clock.schedule_once(
-                lambda dt: self.flush_page.start_wait_countdown(10), 0
+                lambda dt: self.flush_page.start_wait_countdown(4), 0
             )
-            _time.sleep(10)
+            _time.sleep(4)
 
             # ── Step 2: Tea flush ─────────────────────────────────────────────
             print(f"🍵 [Flush] Sending tea flush → {DEVICE_ID}...")
@@ -1052,8 +1052,8 @@ class ChaiOrderingApp(App):
                 print(f"⚠️ [RefillFlush] Step 1 water flush dispatched but NOT confirmed by ESP32 — raw: {w1}")
             else:
                 print(f"✅ [RefillFlush] Step 1 confirmed by ESP32 — raw: {w1}")
-            Clock.schedule_once(lambda dt: self.flush_page.start_wait_countdown(10), 0)
-            _time.sleep(10)
+            Clock.schedule_once(lambda dt: self.flush_page.start_wait_countdown(4), 0)
+            _time.sleep(4)
 
             # ── Step 2/3: Second water flush ─────────────────────────────────
             print("💧 [RefillFlush] Step 2/3 — water flush (2nd)...")
@@ -1067,8 +1067,8 @@ class ChaiOrderingApp(App):
                 print(f"⚠️ [RefillFlush] Step 2 water flush dispatched but NOT confirmed by ESP32 — raw: {w2}")
             else:
                 print(f"✅ [RefillFlush] Step 2 confirmed by ESP32 — raw: {w2}")
-            Clock.schedule_once(lambda dt: self.flush_page.start_wait_countdown(10), 0)
-            _time.sleep(10)
+            Clock.schedule_once(lambda dt: self.flush_page.start_wait_countdown(4), 0)
+            _time.sleep(4)
 
             # ── Step 3/3: Tea flush ───────────────────────────────────────────
             print("🍵 [RefillFlush] Step 3/3 — tea flush...")
