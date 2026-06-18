@@ -1,18 +1,21 @@
 """
 Central Configuration File
+
+Per-machine identity (DEVICE_ID, MACHINE_ID, RFID_MACHINE_ID,
+PUMP_FLOW_RATE_ML_PER_SEC) lives in machine_config.py, which is gitignored —
+every kiosk shares this file via git, but each one has its own machine_config.py
+that's never touched by an update. See machine_config.py.example.
 """
 
-# ============================================================================
-# DEVICE CONFIGURATION
-# ============================================================================
-#UK_14335C5D3FB4
-#UK_30C9223A073C
-# ESP32 Device ID.
-# Format: UK_XXXXXXXXXXXX (MAC-address based, printed on the ESP32 board or
-# read from the serial monitor at boot).
-# Set this manually before deploying.  Change it only if the ESP32 board
-# is physically replaced.
-DEVICE_ID = "UK_14335C5D48C8"
+try:
+    from machine_config import DEVICE_ID, MACHINE_ID, RFID_MACHINE_ID, PUMP_FLOW_RATE_ML_PER_SEC
+except ImportError:
+    raise ImportError(
+        "machine_config.py not found. This file holds THIS machine's identity "
+        "(DEVICE_ID, MACHINE_ID, RFID_MACHINE_ID, PUMP_FLOW_RATE_ML_PER_SEC) and "
+        "is intentionally not committed to git. Copy machine_config.py.example to "
+        "machine_config.py and fill in this machine's real values before starting."
+    )
 
 # ============================================================================
 # API CONFIGURATION
@@ -35,9 +38,6 @@ KTYPE_SENSOR_ID = "ktype_sensor_01"   # Heater element temperature sensor
 # MACHINE CONFIGURATION
 # ============================================================================
 
-# Machine ID for cloud APIs
-MACHINE_ID = "UKL_BLR_004"
-
 # Cups remaining at which the canister-low alert is sent to Kulhad.
 CANISTER_ALERT_THRESHOLD = 10
 
@@ -53,17 +53,8 @@ MACHINE_EMPTY_THRESHOLD = 2
 # Change this value if the ESP32 firmware team updates the serving temperature.
 SERVING_TEMP = 80.0
 
-# RFID ID for ukteawallet.com (e.g., UK_0007)
-RFID_MACHINE_ID = "UK_0007"
-
-# ============================================================================
-# PUMP CALIBRATION
-# ============================================================================
-
-# Physical flow rate of the pump, measured by running it for 60 seconds and
-# measuring the output.  Current calibration: 540 ml/min = 9 ml/s.
-# Update this value if the pump is ever replaced or re-calibrated.
-PUMP_FLOW_RATE_ML_PER_SEC = 9.0   # 540 ml/min ÷ 60
+# RFID_MACHINE_ID and PUMP_FLOW_RATE_ML_PER_SEC are imported from
+# machine_config.py above — both vary per physical machine.
 
 
 def ml_to_pump_ms(ml: float) -> int:
@@ -83,8 +74,7 @@ def ml_to_pump_ms(ml: float) -> int:
 # NOTES
 # ============================================================================
 #
-# To change the device ID:
-# 1. Edit the DEVICE_ID value above
-# 2. Save this file
-# 3. Restart the application
+# To change this machine's identity (device replaced, etc.):
+# 1. Edit the value in machine_config.py (NOT this file)
+# 2. Save and restart the application
 #

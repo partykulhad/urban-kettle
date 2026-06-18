@@ -73,6 +73,12 @@ docs/_build/
 .pybuilder/
 target/
 
+# Per-machine identity (DEVICE_ID, MACHINE_ID, RFID_MACHINE_ID, pump calibration) —
+# each physical kiosk has its own real values here. Never committed, so the shared
+# update.sh / git reset --hard flow can never overwrite one machine's identity
+# with another's. See machine_config.py.example for the template.
+machine_config.py
+
 # Jupyter Notebook
 .ipynb_checkpoints
 

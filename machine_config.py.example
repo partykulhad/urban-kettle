@@ -1,0 +1,27 @@
+"""
+Per-machine identity — copy this file to machine_config.py and fill in the
+REAL values for this specific physical kiosk, then never commit it.
+
+machine_config.py is gitignored on purpose: every kiosk pulls the same shared
+code from the same repo (see update.sh), but each one is a different physical
+machine with its own ESP32, its own Kulhad machine record, and its own pump.
+If these lived in the shared, version-controlled config.py, every machine
+would get overwritten with the SAME identity on the next `git reset --hard`.
+"""
+
+# ESP32 Device ID for THIS machine.
+# Format: UK_XXXXXXXXXXXX (MAC-address based, printed on the ESP32 board or
+# read from the serial monitor at boot). Change only if the ESP32 board on
+# this specific machine is physically replaced.
+DEVICE_ID = "UK_XXXXXXXXXXXX"
+
+# Kulhad machine ID for THIS machine (matches the machine record in Kulhad's dashboard).
+MACHINE_ID = "UKL_BLR_XXX"
+
+# RFID terminal ID for THIS machine on ukteawallet.com (e.g. UK_0007).
+RFID_MACHINE_ID = "UK_XXXX"
+
+# Physical flow rate of THIS machine's pump, measured by running it for 60s
+# and measuring the output. Re-measure and update if this machine's pump is
+# ever replaced or re-calibrated — it varies per physical unit.
+PUMP_FLOW_RATE_ML_PER_SEC = 9.0

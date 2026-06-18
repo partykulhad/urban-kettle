@@ -25,6 +25,15 @@ fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Update found: $LOCAL_REV -> $REMOTE_REV" >> "$LOG_FILE"
 
+# Safety check: machine_config.py holds this machine's identity (DEVICE_ID,
+# MACHINE_ID, etc.) and is gitignored on purpose. If it's somehow missing,
+# config.py will raise ImportError and the app will crash on restart — bail
+# out now instead, so the kiosk keeps running on its last-known-good code.
+if [ ! -f "$REPO_DIR/machine_config.py" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: machine_config.py missing — refusing to update/restart. See machine_config.py.example." >> "$LOG_FILE"
+    exit 1
+fi
+
 # Hard reset instead of a plain pull: a few files (screensaver_cache.json,
 # screensaver_current.mp4) are tracked in git but get rewritten by the app at
 # runtime. A plain `git pull` would refuse to overwrite those local

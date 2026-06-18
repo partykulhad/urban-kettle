@@ -327,7 +327,7 @@ class SelectionPage(Screen):
             size_hint=(None, None),
             size=(160, 80)
         )
-        self.cups_counter.pos_hint = {'right': 0.98, 'top': 0.72}
+        self.cups_counter.pos_hint = {'right': 0.98, 'top': 0.30}
         top_bar.add_widget(self.cups_counter)
 
         main_layout.add_widget(top_bar)
