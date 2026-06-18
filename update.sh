@@ -5,7 +5,11 @@
 # check, since that would interrupt a customer mid-order for nothing.
 set -euo pipefail
 
-REPO_DIR="/home/pi/urban-kettle"
+# Auto-detect this script's own directory instead of hardcoding /home/pi —
+# the actual username/install path varies per machine (e.g. some are set up
+# under a different user than "pi"). Works correctly even when cron invokes
+# this with an absolute path.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRANCH="main"
 SERVICE="urban-kettle"
 LOG_FILE="$REPO_DIR/update.log"
