@@ -15,6 +15,14 @@ SERVICE="urban-kettle"
 LOG_FILE="$REPO_DIR/update.log"
 
 cd "$REPO_DIR"
+
+# This runs every 5 minutes forever — without capping it, update.log grows by a
+# few lines every run, unbounded, for the life of the machine (SD card wear +
+# eventually fills the disk). Keep only the most recent ~1000 lines.
+if [ -f "$LOG_FILE" ]; then
+    tail -n 1000 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+fi
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking for updates..." >> "$LOG_FILE"
 
 git fetch origin "$BRANCH" >> "$LOG_FILE" 2>&1

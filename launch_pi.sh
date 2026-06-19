@@ -73,15 +73,18 @@ cleanup() {
 trap cleanup SIGTERM SIGINT EXIT
 
 # ── Start backend ─────────────────────────────────────────────────────────────
+# Logs go to /tmp, not $APP_DIR (the SD card) — these are high-volume print()
+# output, regenerated every boot, and not worth the SD card wear. /tmp is
+# mounted tmpfs (see setup_watchdog.sh), so this never touches flash storage.
 echo "Starting polling server (ESP32 bridge)..."
-"$PYTHON" "$APP_DIR/polling_server2.py" > "$APP_DIR/backend.log" 2>&1 &
+"$PYTHON" "$APP_DIR/polling_server2.py" > /tmp/urban_kettle_backend.log 2>&1 &
 BACKEND_PID=$!
 
 # Wait until Flask responds on :5000 (up to 15s) — process-alive check is not enough
 BACKEND_READY=0
 for i in $(seq 1 15); do
     sleep 1
-    kill -0 "$BACKEND_PID" 2>/dev/null || { echo "❌ Backend crashed — check backend.log"; exit 1; }
+    kill -0 "$BACKEND_PID" 2>/dev/null || { echo "❌ Backend crashed — check /tmp/urban_kettle_backend.log"; exit 1; }
     if curl -sf "http://localhost:5000/health" > /dev/null 2>&1 \
     || curl -sf "http://localhost:5000/api/status" > /dev/null 2>&1; then
         echo "✅ Backend ready and responding on :5000 (${i}s, PID=$BACKEND_PID)"
@@ -93,11 +96,11 @@ done
 
 # ── Start frontend ────────────────────────────────────────────────────────────
 echo "Starting UI (main_app.py)..."
-"$PYTHON" "$APP_DIR/main_app.py" > "$APP_DIR/frontend.log" 2>&1 &
+"$PYTHON" "$APP_DIR/main_app.py" > /tmp/urban_kettle_frontend.log 2>&1 &
 FRONTEND_PID=$!
 
 sleep 3
-kill -0 "$FRONTEND_PID" 2>/dev/null || { echo "❌ Frontend failed — check frontend.log"; cat "$APP_DIR/frontend.log" | tail -30; exit 1; }
+kill -0 "$FRONTEND_PID" 2>/dev/null || { echo "❌ Frontend failed — check /tmp/urban_kettle_frontend.log"; cat /tmp/urban_kettle_frontend.log | tail -30; exit 1; }
 echo "✅ Frontend running (PID=$FRONTEND_PID)"
 
 echo "========================================"

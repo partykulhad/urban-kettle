@@ -272,8 +272,23 @@ class ChaiOrderingApp(App):
             Clock.schedule_once(lambda dt: self.screensaver_page.set_video_path(video_path))
         
         self.screensaver_video_manager.update_video_async(callback=on_video_ready)
-        
+
+        # Watchdog heartbeat: touch a file every 15s from a Clock callback, so it
+        # only keeps updating while Kivy's main event loop is actually pumping —
+        # a real UI/payment freeze stops this even though the process stays alive.
+        # /etc/watchdog.conf on the Pi watches this file's mtime and reboots if it
+        # goes stale (see setup_watchdog.sh).
+        self._watchdog_heartbeat_event = Clock.schedule_interval(self._write_watchdog_heartbeat, 15)
+        self._write_watchdog_heartbeat(0)
+
         return self.screen_manager
+
+    def _write_watchdog_heartbeat(self, dt):
+        try:
+            with open("/tmp/urban_kettle_heartbeat", "w") as f:
+                f.write(str(time.time()))
+        except Exception as e:
+            print(f"⚠️ [Watchdog] Could not write heartbeat file: {e}")
     
     def show_page(self, page_name):
         """Show a page by name"""
