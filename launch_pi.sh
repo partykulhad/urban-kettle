@@ -74,8 +74,7 @@ trap cleanup SIGTERM SIGINT EXIT
 
 # ── Start backend ─────────────────────────────────────────────────────────────
 # Logs go to /tmp, not $APP_DIR (the SD card) — these are high-volume print()
-# output, regenerated every boot, and not worth the SD card wear. /tmp is
-# mounted tmpfs (see setup_watchdog.sh), so this never touches flash storage.
+# output, regenerated every boot, and not worth the SD card wear.
 echo "Starting polling server (ESP32 bridge)..."
 "$PYTHON" "$APP_DIR/polling_server2.py" > /tmp/urban_kettle_backend.log 2>&1 &
 BACKEND_PID=$!
