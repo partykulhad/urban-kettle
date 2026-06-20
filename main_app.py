@@ -1664,8 +1664,12 @@ class ChaiOrderingApp(App):
                     1.5
                 )
 
-            elif status_message == "expired":
-                print("Payment expired, cancelling automatically")
+            elif status_message in ("expired", "cancelled", "failed"):
+                # Kulhad's transaction status was simplified to just
+                # paid/cancelled/failed (expired/closed/refunded all collapse
+                # into "cancelled" now) — treat all three terminal non-paid
+                # outcomes the same way "expired" alone used to be handled.
+                print(f"Payment {status_message}, cancelling automatically")
                 self.payment_page.update_status("Payment expired!")
                 Clock.schedule_once(lambda dt: self.cancel_payment(auto_cancel=True), 1)
 
