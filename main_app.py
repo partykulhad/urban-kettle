@@ -298,7 +298,10 @@ class ChaiOrderingApp(App):
         # Cups were just refilled — run refill flush before going to selection.
         if getattr(self, '_pending_refill_flush', False):
             self._pending_refill_flush = False
-            Clock.schedule_once(lambda dt: self._trigger_refill_flush(), 0)
+            # TEMPORARILY DISABLED — refill flush (2x water + 1x tea) paused.
+            # Uncomment the line below to re-enable; _trigger_refill_flush()
+            # and _run_refill_flush() are untouched and ready to go.
+            # Clock.schedule_once(lambda dt: self._trigger_refill_flush(), 0)
             return
 
         if self.flush_in_progress:
@@ -581,8 +584,10 @@ class ChaiOrderingApp(App):
                     self.machine_empty_page.set_mode('empty')
                     self.show_page('machine_empty')
                 Clock.schedule_once(_show_empty_after_thankyou, 3.0)
-            # Schedule auto water flush if no new order within flushTimeMinutes
-            self.schedule_auto_flush()
+            # TEMPORARILY DISABLED — idle auto-flush (water + tea after
+            # flushTimeMinutes idle) paused. Uncomment to re-enable;
+            # schedule_auto_flush() and _run_auto_flush() are untouched.
+            # self.schedule_auto_flush()
     
     def refresh_cups_count(self):
         """Refresh the cups count on home pages"""
