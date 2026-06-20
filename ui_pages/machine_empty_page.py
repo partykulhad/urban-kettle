@@ -84,7 +84,7 @@ class MachineEmptyPage(Screen):
 
         # Subtitle
         self.subtitle_label = Label(
-            text="Machine is empty",
+            text="Refill on its way",
             font_size='22sp',
             color=(0.5, 0.5, 0.5, 1),
             halign='center'
@@ -93,7 +93,7 @@ class MachineEmptyPage(Screen):
 
         # Info message
         self.info_label = Label(
-            text="Refiller is on its way\nTry again after some time",
+            text="Please try again later",
             font_size='20sp',
             color=(0.6, 0.6, 0.6, 1),
             halign='center'
@@ -120,7 +120,12 @@ class MachineEmptyPage(Screen):
     
     def set_mode(self, mode):
         """Switch between 'empty' (cups = 0), 'offline' (ESP32/machine offline),
-        and 'water_low' (ESP32 reported waterLevelLow=True)."""
+        and 'water_low' (ESP32 reported waterLevelLow=True).
+
+        'offline'/'water_low' are genuine hardware/connectivity problems, so
+        they show "Under Maintenance". 'empty' is just a normal low-stock
+        refill, not a fault, so it gets its own reassuring message instead.
+        """
         self.current_mode = mode
         if mode == 'offline' or mode == 'water_low':
             self.title_label.text = "Under Maintenance"
@@ -128,8 +133,8 @@ class MachineEmptyPage(Screen):
             self.info_label.text = "Sorry for the inconvenience\nPlease check back shortly"
         else:
             self.title_label.text = "We'll be back soon!"
-            self.subtitle_label.text = "Machine is empty"
-            self.info_label.text = "Refiller is on its way\nTry again after some time"
+            self.subtitle_label.text = "Refill on its way"
+            self.info_label.text = "Please try again later"
 
     def _update_rect(self, instance, value):
         """Update background rectangle"""

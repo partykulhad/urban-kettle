@@ -295,14 +295,15 @@ class ChaiOrderingApp(App):
         self._pending_cups_after_heating = None  # safety reset
         self._pending_rfid_dispense_after_heating = False  # safety reset
 
-        # Cups were just refilled — run refill flush before going to selection.
+        # Cups were just refilled — normally this runs the refill flush before
+        # going to selection. TEMPORARILY DISABLED (flush paused) — falls
+        # through to the normal show_page('selection') below instead of
+        # dead-ending here, so the customer can still order after a refill.
+        # Uncomment the Clock.schedule_once line to re-enable the flush;
+        # _trigger_refill_flush() and _run_refill_flush() are untouched.
         if getattr(self, '_pending_refill_flush', False):
             self._pending_refill_flush = False
-            # TEMPORARILY DISABLED — refill flush (2x water + 1x tea) paused.
-            # Uncomment the line below to re-enable; _trigger_refill_flush()
-            # and _run_refill_flush() are untouched and ready to go.
             # Clock.schedule_once(lambda dt: self._trigger_refill_flush(), 0)
-            return
 
         if self.flush_in_progress:
             self.flush_page.show_waiting()
