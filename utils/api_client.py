@@ -35,6 +35,7 @@ class ApiClient:
         self.RFID_VALIDATE_API_URL = "https://tea-wallet-prasadthirtha.replit.app/api/rfid/validate"
         self.CANISTER_CHECK_API_URL = "https://kulhad.vercel.app/api/canister-check"
         self.WATER_LEVEL_API_URL = "https://kulhad.vercel.app/api/water-level"
+        self.REFILL_RESOLVED_API_URL = "https://kulhad.vercel.app/api/refill-resolved"
         from config import POLLING_SERVER_URL
         self.HARDWARE_COMMAND_URL = f"{POLLING_SERVER_URL}/api/device/command"
         # Use persistent session for connection pooling
@@ -376,6 +377,36 @@ class ApiClient:
                 return None
         except Exception as e:
             print(f"❌ Error sending canister alert: {e}")
+            return None
+
+    def resolve_refill_alert(self, machine_id):
+        """Tell Kulhad cups are back above the canister-alert threshold, so it
+        closes any still-open refill request(s) for this machine — otherwise
+        the dashboard's Refill Requests alert sits forever even after refilling.
+        """
+        try:
+            payload = {"machineId": machine_id}
+            headers = {"Content-Type": "application/json"}
+
+            print(f"🔄 Resolving refill alert for machine {machine_id}")
+
+            response = self.session.post(
+                self.REFILL_RESOLVED_API_URL,
+                data=json.dumps(payload),
+                headers=headers,
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                print(f"✅ Refill alert resolved (closed {result.get('resolvedCount')} request(s))")
+                return result
+            else:
+                print(f"❌ Failed to resolve refill alert: {response.status_code}")
+                print(f"   Error: {response.text}")
+                return None
+        except Exception as e:
+            print(f"❌ Error resolving refill alert: {e}")
             return None
 
     def report_water_level(self, machine_id, water_level_low):

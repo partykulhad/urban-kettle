@@ -1163,6 +1163,10 @@ class ChaiOrderingApp(App):
         elif count > CANISTER_ALERT_THRESHOLD:
             if self.canister_alert_sent:
                 print(f"🔄 Cups refilled to {count}, resetting alert flag")
+                threading.Thread(
+                    target=lambda: self.api_client.resolve_refill_alert(self.MACHINE_ID),
+                    daemon=True
+                ).start()
             self.canister_alert_sent = False
 
         # Update cups display on both pages
@@ -1221,6 +1225,10 @@ class ChaiOrderingApp(App):
             elif count > CANISTER_ALERT_THRESHOLD:
                 if self.canister_alert_sent:
                     print(f"🔄 Cups refilled to {count} after dispensing, resetting alert flag")
+                    threading.Thread(
+                        target=lambda: self.api_client.resolve_refill_alert(self.MACHINE_ID),
+                        daemon=True
+                    ).start()
                 self.canister_alert_sent = False
 
             # Update cups display on both pages (use snapshot to avoid stale reference)
