@@ -284,9 +284,6 @@ class SelectionPage(Screen):
         import os as _os
         self.inactivity_timeout = 30 if _os.environ.get("UK_TEST_MODE") else 10
         self.inactivity_timer = None
-        
-        # Debounce timer — fires prefetch 0.2s after user stops tapping
-        self.prefetch_timer = None
 
         # Main layout - no padding to match payment_method_page exactly
         main_layout = BoxLayout(orientation='vertical')
@@ -434,7 +431,7 @@ class SelectionPage(Screen):
         main_layout.add_widget(button_section)
 
         # Bottom spacing
-        main_layout.add_widget(Widget(size_hint_y=0.02))
+        main_layout.add_widget(Widget(size_hint_y=0.05))
         
         self.add_widget(main_layout)
 
@@ -461,7 +458,11 @@ class SelectionPage(Screen):
             self.number_of_cups += 1
             self.number_display.set_number(self.number_of_cups)
             print(f"✅ Increased cups to {self.number_of_cups}")
-            self._schedule_prefetch()
+            # No prefetch here on purpose — only the default (1 cup, prefetched
+            # on page entry) gets an instant-reveal QR. Any other count gets
+            # generated synchronously at Confirm (loading page, ~2-3s) instead
+            # of speculatively generating a real Razorpay QR for every count
+            # the customer pauses on while still deciding.
         else:
             # Show popup when trying to exceed available cups
             self.show_cups_limit_popup()
@@ -481,19 +482,9 @@ class SelectionPage(Screen):
             self.number_of_cups -= 1
             self.number_display.set_number(self.number_of_cups)
             print(f"✅ Decreased cups to {self.number_of_cups}")
-            self._schedule_prefetch()
+            # See increase_cups — no per-tap prefetch, by design.
         else:
             print("⚠️ Minimum 1 cup required")
-
-    def _schedule_prefetch(self):
-        """Debounce: wait 0.2s after last tap before firing API call."""
-        if self.prefetch_timer:
-            self.prefetch_timer.cancel()
-        self.prefetch_timer = Clock.schedule_once(self._execute_prefetch, 0.2)
-
-    def _execute_prefetch(self, dt):
-        print(f"🚀 Prefetching QR for {self.number_of_cups} cups...")
-        App.get_running_app().trigger_qr_prefetch(self.number_of_cups)
 
     def on_confirm_pay(self, instance):
         current_time = time.time()
@@ -617,10 +608,6 @@ class SelectionPage(Screen):
         """Clean up when leaving page"""
         self.stop_inactivity_timer()
         Window.unbind(on_touch_down=self.on_user_interaction)
-        # Cancel any pending debounced prefetch so it doesn't fire after leaving
-        if self.prefetch_timer:
-            self.prefetch_timer.cancel()
-            self.prefetch_timer = None
 
         # Stop RFID polling when leaving selection (the home page)
         app = App.get_running_app()

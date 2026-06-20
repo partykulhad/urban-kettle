@@ -145,7 +145,7 @@ class ThankYouPage(Screen):
         main_layout.add_widget(button_section)
         
         # Bottom spacing
-        main_layout.add_widget(Widget(size_hint_y=0.03))
+        main_layout.add_widget(Widget(size_hint_y=0.05))
         
         self.add_widget(main_layout)
         

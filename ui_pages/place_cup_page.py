@@ -221,7 +221,7 @@ class PlaceCupPage(Screen):
         # Cup status label removed (bypassed)
         
         # Bottom spacing
-        main_layout.add_widget(Widget(size_hint_y=0.03))
+        main_layout.add_widget(Widget(size_hint_y=0.05))
         
         # Add main layout to root
         root_layout.add_widget(main_layout)
