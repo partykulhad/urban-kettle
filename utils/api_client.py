@@ -511,10 +511,22 @@ class ApiClient:
         """Trigger a tea flush maintenance action"""
         return self.send_hardware_command(device_id, "tea_dispense", {"jobId": str(uuid.uuid4())})
 
-    def get_machine_data(self, machine_id):
-        """Fetch machine config (flushTimeMinutes, price, mlToDispense) from the backend"""
+    def get_machine_data(self, machine_id, telemetry=None):
+        """Fetch machine config (flushTimeMinutes, price, mlToDispense) from the backend.
+
+        telemetry: optional dict for remote monitoring, piggybacked as query params
+        on this same call rather than a separate endpoint/polling cycle — e.g.
+        {"currentPage": "selection", "cpu_percent": 12.3, "mem_percent": 41.0,
+        "disk_percent": 58.2}. Any subset of keys is fine; missing ones are just
+        omitted from the request.
+        """
         try:
             url = f"https://kulhad.vercel.app/api/getMachineData?machineId={machine_id}"
+            if telemetry:
+                from urllib.parse import urlencode
+                clean = {k: v for k, v in telemetry.items() if v is not None}
+                if clean:
+                    url += "&" + urlencode(clean)
             response = self.session.get(url, timeout=5)
             if response.status_code == 200:
                 return response.json()

@@ -616,8 +616,14 @@ class ChaiOrderingApp(App):
         """
         try:
             from config import DEVICE_ID, ml_to_pump_ms
+            from utils.system_health import get_system_health
 
-            result = self.api_client.get_machine_data(self.MACHINE_ID)
+            # Remote monitoring: piggyback current page + Pi system health on
+            # this same 60s call rather than a separate polling cycle.
+            telemetry = {"currentPage": getattr(self, '_current_page', None)}
+            telemetry.update(get_system_health())
+
+            result = self.api_client.get_machine_data(self.MACHINE_ID, telemetry=telemetry)
             if not result or not result.get("success"):
                 print("⚠️ [Config] Could not fetch machine config from Kulhad — using cached values")
                 return
