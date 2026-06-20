@@ -187,23 +187,16 @@ class ApiClient:
             status: 'online' or 'offline'
         """
         try:
-            url = f"https://kulhad.vercel.app/api/updateMachineStatus"
+            # /api/updateMachineStatus doesn't exist on Kulhad — confirmed by
+            # checking its routes directly, every call there 404s. Go straight
+            # to /api/MachinesStatus, which actually handles this POST.
+            url = f"https://kulhad.vercel.app/api/MachinesStatus"
             payload = {"machineId": machine_id, "status": status}
             response = self.session.post(url, json=payload, timeout=5)
             if response.status_code == 200:
                 print(f"✅ [Status] Reported machine {machine_id} → {status}")
                 return response.json()
-            elif response.status_code == 404:
-                # Endpoint may not exist yet — try MachinesStatus with POST
-                url2 = f"https://kulhad.vercel.app/api/MachinesStatus"
-                r2 = self.session.post(url2, json=payload, timeout=5)
-                if r2.status_code == 200:
-                    print(f"✅ [Status] Reported via MachinesStatus: {machine_id} → {status}")
-                    return r2.json()
-                print(f"⚠️ [Status] Both status endpoints returned {r2.status_code} — "
-                      f"kulhad may not support machine state reporting yet")
-            else:
-                print(f"⚠️ [Status] report_machine_status HTTP {response.status_code}: {response.text[:200]}")
+            print(f"⚠️ [Status] report_machine_status HTTP {response.status_code}: {response.text[:200]}")
             return None
         except Exception as e:
             print(f"⚠️ [Status] report_machine_status error: {e}")

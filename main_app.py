@@ -868,7 +868,7 @@ class ChaiOrderingApp(App):
         own timeouts (payment QR ~10min, place_cup auto-dispense 30s, etc.), so this
         cannot defer forever.
         """
-        critical_pages = ['place_cup', 'dispensing', 'payment', 'loading', 'rfid_auth']
+        critical_pages = ['place_cup', 'dispensing', 'payment', 'loading', 'rfid_auth', 'thank_you', 'flush']
         current = self.screen_manager.current
         if current in critical_pages:
             print(f"🟡 [OperatingHours] Closing deferred — customer mid-transaction ({current}), retrying in 30s")
@@ -888,6 +888,13 @@ class ChaiOrderingApp(App):
             target=lambda: self.api_client.report_machine_status(self.MACHINE_ID, 'online'),
             daemon=True
         ).start()
+        # Mirrors _operating_go_offline() setting previous_machine_state on the
+        # main thread — without this, it stays "offline" until the
+        # machine_empty page's own 3s poller happens to notice ESP32 is back
+        # online and self-corrects it. Setting it here directly removes that
+        # brief window where Kulhad/ESP32 already say "online" but our own
+        # state-tracking still disagrees.
+        Clock.schedule_once(lambda dt: setattr(self, 'previous_machine_state', 'online'), 0)
         print("🟢 [OperatingHours] ESP32 ONLINE sent — machine will heat up before opening")
         # Reschedule for tomorrow
         if self._operating_start and self._operating_end:
