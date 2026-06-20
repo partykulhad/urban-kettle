@@ -1150,8 +1150,10 @@ class ChaiOrderingApp(App):
         print(f"🔍 DEBUG: count={count}, canister_alert_sent={self.canister_alert_sent}")
         if count <= CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
             print(f"🔔 Cups are at {CANISTER_ALERT_THRESHOLD}! Sending canister alert...")
+            # canister_alert_sent is set inside send_canister_alert() itself, only on
+            # confirmed API success — not here, so a failed call gets retried on the
+            # next threshold check instead of being silently suppressed forever.
             self.send_canister_alert()
-            self.canister_alert_sent = True
         # Reset alert flag if cups go above the threshold (refilled)
         elif count > CANISTER_ALERT_THRESHOLD:
             if self.canister_alert_sent:
@@ -1206,8 +1208,9 @@ class ChaiOrderingApp(App):
             print(f"🔍 DEBUG: after decrement count={count}, canister_alert_sent={self.canister_alert_sent}")
             if count <= CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
                 print(f"🔔 Cups reached {CANISTER_ALERT_THRESHOLD} after dispensing! Sending canister alert...")
+                # canister_alert_sent is set inside send_canister_alert() itself, only
+                # on confirmed API success — see set_local_cups_count for why.
                 self.send_canister_alert()
-                self.canister_alert_sent = True
 
             # Reset alert flag if cups go above the threshold (refilled)
             elif count > CANISTER_ALERT_THRESHOLD:
@@ -1258,6 +1261,11 @@ class ChaiOrderingApp(App):
                 result = self.api_client.check_canister_level(self.MACHINE_ID, canister_level=CANISTER_ALERT_THRESHOLD)
                 if result:
                     print(f"✅ DEBUG: Canister alert API call successful")
+                    # Only mark as sent on confirmed success — if this call fails
+                    # (network blip, Kulhad cold start), canister_alert_sent must
+                    # stay False so the next threshold check retries, instead of
+                    # silently giving up until cups are refilled above threshold.
+                    self.canister_alert_sent = True
                 else:
                     print(f"❌ DEBUG: Canister alert API call failed - no result")
             except Exception as e:
