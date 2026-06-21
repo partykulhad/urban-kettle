@@ -407,14 +407,21 @@ class ApiClient:
         water_level_low=True  → tank is low, Kulhad alerts staff and flags the machine.
         water_level_low=False → tank refilled, Kulhad clears the flag (no alert).
         """
+        from datetime import datetime
         try:
+            reported_at = datetime.now().isoformat()
             payload = {
                 "machineId": machine_id,
-                "waterLevelLow": water_level_low
+                "waterLevelLow": water_level_low,
+                # Kulhad records its own server-side receipt time as the
+                # authoritative timestamp (avoids clock-skew issues) — this is
+                # sent only so it can be logged/cross-referenced if the two
+                # ever look suspiciously far apart.
+                "reportedAt": reported_at
             }
             headers = {"Content-Type": "application/json"}
 
-            print(f"💧 Reporting waterLevelLow={water_level_low} for machine {machine_id}")
+            print(f"💧 Reporting waterLevelLow={water_level_low} for machine {machine_id} at {reported_at}")
 
             response = self.session.post(
                 self.WATER_LEVEL_API_URL,
@@ -425,7 +432,8 @@ class ApiClient:
 
             if response.status_code == 200:
                 result = response.json()
-                print(f"✅ Water level reported successfully: {result.get('machineName')}")
+                print(f"✅ Water level reported successfully: {result.get('machineName')} "
+                      f"(Kulhad recorded change at: {result.get('waterLevelLowAt')})")
                 return result
             else:
                 print(f"❌ Failed to report water level: {response.status_code}")
