@@ -22,7 +22,8 @@ except ImportError:
 # ============================================================================
 
 # Polling server URL (ESP32 communication)
-POLLING_SERVER_URL = "http://localhost:5000"
+import os
+POLLING_SERVER_URL = os.environ.get("POLLING_SERVER_URL", "http://localhost:5000")
 
 
 # ============================================================================
