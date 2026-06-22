@@ -1038,10 +1038,8 @@ class PaymentMethodPage(Screen):
                 # Navigate to selection page
                 self.navigate_to_selection()
 
-                # Prefetch 1-cup QR while user is on selection page.
-                # 1 cup is the most common order — this makes Confirm instant for that path.
-                # If user backs out, selection_page.on_back_pressed cancels it cleanly.
-                app.trigger_qr_prefetch(1)
+                # Prefetch 1-cup QR while user is on selection page (Disabled for Option A)
+                # app.trigger_qr_prefetch(1)
         else:
             # Fallback - just ignore if cups counter not available
             print("Cups counter not available, ignoring click")
@@ -1535,13 +1533,11 @@ class PaymentMethodPage(Screen):
 
         # Note: Global status monitoring in main_app.py handles continuous checks
 
-        # Pre-warm the QR cache for 1 cup as soon as the home page is visible.
-        # Users spend 2-5s here before confirming — enough for the Kulhad API to
-        # respond (2-3s typical) so the payment page loads instantly.
-        from kivy.app import App
-        app = App.get_running_app()
-        if hasattr(app, 'trigger_qr_prefetch'):
-            app.trigger_qr_prefetch(1)
+        # Pre-warm the QR cache for 1 cup as soon as the home page is visible (Disabled for Option A)
+        # from kivy.app import App
+        # app = App.get_running_app()
+        # if hasattr(app, 'trigger_qr_prefetch'):
+        #     app.trigger_qr_prefetch(1)
 
         # Enable RFID listening
         self.rfid_listening = True

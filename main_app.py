@@ -319,7 +319,7 @@ class ChaiOrderingApp(App):
         self.show_page('selection')
     
     def show_payment_page(self, number_of_cups=None):
-        """Show the payment page with QR code generation (using Multi-Prefetch)"""
+        """Show the payment page with QR code generation (Lazy/No-Prefetch)"""
         if number_of_cups is None:
             number_of_cups = self.selection_page.get_cup_count()
 
@@ -333,128 +333,16 @@ class ChaiOrderingApp(App):
         self.set_selected_cups(number_of_cups)
         self.show_loading_page()
         self.loading_timeout_event = Clock.schedule_once(self.on_loading_timeout, 30)
-        
-        # --- STRATEGY 1: Check Multi-Prefetch Cache ---
-        # needs_fallback is determined INSIDE the lock so no other thread can race
-        # between releasing the lock and the check below.
-        needs_fallback = False
-        with self._prefetch_lock:
-            cached = self._prefetches.get(number_of_cups)
-            if cached and cached.get('data') and cached.get('image'):
-                print(f"⚡ MULTI-PREFETCH: Instant reveal for {number_of_cups} cups!")
-                data = cached['data']
-                image = cached['image']
 
-                # Cancel every OTHER cached QR before clearing — no leaks
-                others = {k: v for k, v in self._prefetches.items() if k != number_of_cups}
-                self._prefetches = {}
+        # Cancel any active prefetches/loading to clear the queue
+        self.cancel_prefetched_qrs()
 
-                # Mark every OTHER in-flight prefetch as abandoned so it cancels on completion
-                for count in self._prefetching_counts:
-                    if count != number_of_cups:
-                        self._prefetch_abandoned.add(count)
-
-                Clock.schedule_once(lambda dt: self.update_payment_page(image, data))
-
-            elif number_of_cups in self._prefetching_counts:
-                # Prefetch for this count is in flight — mark all others abandoned, wait
-                print(f"⌛ MULTI-PREFETCH: Already fetching {number_of_cups} cups. Loading screen will wait.")
-                for count in self._prefetching_counts:
-                    if count != number_of_cups:
-                        self._prefetch_abandoned.add(count)
-                # Cancel other cached QRs too
-                others = {k: v for k, v in self._prefetches.items() if k != number_of_cups}
-                self._prefetches = {number_of_cups: self._prefetches[number_of_cups]} if number_of_cups in self._prefetches else {}
-                # needs_fallback stays False — worker will deliver result
-            else:
-                others = dict(self._prefetches)
-                self._prefetches = {}
-                for count in self._prefetching_counts:
-                    self._prefetch_abandoned.add(count)
-                needs_fallback = True  # nothing in cache or in-flight
-
-        # Cancel any stale cached QRs outside the lock (avoids holding lock during network call)
-        for cup_count, entry in others.items():
-            qr_id = entry.get('data', {}).get('id', '')
-            if qr_id:
-                print(f"🗑️ Cancelling stale cached QR {qr_id} ({cup_count} cups)")
-                threading.Thread(
-                    target=lambda qid=qr_id: self.api_client.cancel_payment(qid),
-                    daemon=True
-                ).start()
-
-        if cached:
-            return
-
-        if needs_fallback:
-            print(f"🔄 MULTI-PREFETCH: Result for {number_of_cups} not in cache/loading, using fallback.")
-            threading.Thread(target=lambda: self.generate_qr_code(number_of_cups), daemon=True).start()
+        print(f"🔄 Lazy QR Generation: Requesting QR for {number_of_cups} cups...")
+        threading.Thread(target=lambda: self.generate_qr_code(number_of_cups), daemon=True).start()
 
     def trigger_qr_prefetch(self, number_of_cups):
         """Pre-generate a unique QR for a specific cup count in the background"""
-        def _prefetch_worker():
-            with self._prefetch_lock:
-                if number_of_cups in self._prefetches or number_of_cups in self._prefetching_counts:
-                    return
-                self._prefetching_counts.add(number_of_cups)
-
-            print(f"🛰️ MULTI-PREFETCH: Starting background request for {number_of_cups} cups...")
-            qr_data = self.api_client.generate_payment_qr(self.MACHINE_ID, number_of_cups)
-
-            # Check abandoned BEFORE touching cache — must happen while lock is held
-            with self._prefetch_lock:
-                abandoned = number_of_cups in self._prefetch_abandoned
-                self._prefetching_counts.discard(number_of_cups)
-                self._prefetch_abandoned.discard(number_of_cups)
-
-            if abandoned:
-                # User moved on — cancel this QR immediately, never cache it
-                qr_id = (qr_data or {}).get('id', '')
-                if qr_id:
-                    print(f"🗑️ PREFETCH ABANDONED: cancelling {qr_id} ({number_of_cups} cups)")
-                    threading.Thread(
-                        target=lambda qid=qr_id: self.api_client.cancel_payment(qid),
-                        daemon=True
-                    ).start()
-                return
-
-            if qr_data and qr_data.get("imageContent"):
-                pil_img = QRUtils.generate_qr_from_content(qr_data["imageContent"])
-                # Pre-encode to PNG bytes here in the background thread so the
-                # main thread only needs CoreImage(buf) — no PIL.save() on UI thread.
-                import io as _io
-                buf = _io.BytesIO()
-                pil_img.save(buf, format='PNG')
-                img = buf  # pass BytesIO to cache; update_qr_code() accepts both
-                print(f"✅ MULTI-PREFETCH: {number_of_cups} cups is READY in cache.")
-
-                # User is on loading screen waiting for this exact count — deliver now
-                if self._current_page == 'loading' and self.selected_cups == number_of_cups:
-                    print(f"🎯 MULTI-PREFETCH: Delivered just-in-time for {number_of_cups} cups!")
-                    Clock.schedule_once(lambda dt: self.update_payment_page(img, qr_data))
-                    return
-
-                # User is on loading screen but waiting for a DIFFERENT count — cancel this one
-                if self._current_page == 'loading' and self.selected_cups != number_of_cups:
-                    qr_id = qr_data.get('id', '')
-                    if qr_id:
-                        print(f"🗑️ STALE PREFETCH: cancelling {qr_id} ({number_of_cups} cups, user wants {self.selected_cups})")
-                        threading.Thread(
-                            target=lambda qid=qr_id: self.api_client.cancel_payment(qid),
-                            daemon=True
-                        ).start()
-                    return
-
-                # Store in cache for when user confirms
-                with self._prefetch_lock:
-                    self._prefetches[number_of_cups] = {'data': qr_data, 'image': img}
-            else:
-                print(f"❌ MULTI-PREFETCH: Background request failed for {number_of_cups} cups.")
-                if self._current_page == 'loading' and self.selected_cups == number_of_cups:
-                    print("⚠️ User was waiting for this prefetch - showing error fallback")
-                    Clock.schedule_once(lambda dt: self.show_error_fallback())
-
-        threading.Thread(target=_prefetch_worker, daemon=True).start()
+        return  # Disabled to prevent QR code wastage (Option A)
 
     def cancel_prefetched_qrs(self):
         """Cancel all cached and in-flight prefetch QRs.
@@ -2066,10 +1954,9 @@ class ChaiOrderingApp(App):
         self.show_page('heating')
         self.start_heating_monitor()
 
-        # Pre-generate QR while heating — skip if we already know the exact cup count
-        # since we'll generate the right QR when heating completes.
-        if getattr(self, '_pending_cups_after_heating', None) is None:
-            self.trigger_qr_prefetch(1)
+        # Pre-generate QR while heating — skip if we already know the exact cup count (Disabled for Option A)
+        # if getattr(self, '_pending_cups_after_heating', None) is None:
+        #     self.trigger_qr_prefetch(1)
     
     def start_heating_monitor(self):
         """Monitor temperature every 1 second until ready.

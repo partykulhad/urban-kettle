@@ -587,8 +587,8 @@ class SelectionPage(Screen):
                 self.cups_counter.set_loading()
         app.fetch_and_store_cups_count()
 
-        # Pre-fetch QR for the default 1-cup selection immediately
-        app.trigger_qr_prefetch(1)
+        # Pre-fetch QR for the default 1-cup selection immediately (Disabled for Option A)
+        # app.trigger_qr_prefetch(1)
 
         # Start inactivity timer
         self.start_inactivity_timer()
