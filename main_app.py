@@ -113,6 +113,10 @@ class ChaiOrderingApp(App):
         self._flush_cancelled = True            # Prevents spurious timer arming at startup
         self._pending_refill_flush = False      # True when cups refilled — triggers refill flush before going home
 
+        # *** SERVICE REFILL WINDOW — set from Kulhad config (serviceRefillStart/End) ***
+        self._service_refill_start = None   # datetime.time — window start (e.g. 13:00)
+        self._service_refill_end   = None   # datetime.time — window end   (e.g. 17:00)
+
         # *** Operating hours (from Kulhad startTime / endTime) ***
         self._operating_start  = None           # datetime.time — machine open time
         self._operating_end    = None           # datetime.time — machine close time
@@ -585,6 +589,23 @@ class ChaiOrderingApp(App):
                 print("⚠️ [Config] No startTime/endTime in Kulhad — "
                       "operating hours scheduler not active")
 
+            # ── Service refill window (serviceRefillStart / serviceRefillEnd) ─────
+            svc_start_str = (data.get("serviceRefillStart") or data.get("servicerefillstart"))
+            svc_end_str   = (data.get("serviceRefillEnd")   or data.get("servicerefillend"))
+            if svc_start_str and svc_end_str:
+                new_svc_start = self._parse_operating_time(str(svc_start_str))
+                new_svc_end   = self._parse_operating_time(str(svc_end_str))
+                if new_svc_start and new_svc_end:
+                    if new_svc_start != self._service_refill_start or \
+                            new_svc_end != self._service_refill_end:
+                        self._service_refill_start = new_svc_start
+                        self._service_refill_end   = new_svc_end
+                        updated.append(f"serviceRefillWindow={svc_start_str}–{svc_end_str}")
+            else:
+                # Clear if not set
+                self._service_refill_start = None
+                self._service_refill_end   = None
+
             # ── Kulhad-commanded online/offline (manual dashboard toggle) ────
             # previous_machine_state reflects the Pi's own last-known real-world
             # state (from ESP32 health checks). If Kulhad's status disagrees with
@@ -615,6 +636,28 @@ class ChaiOrderingApp(App):
 
         except Exception as e:
             print(f"❌ [Config] Cache refresh error: {e}")
+
+    # =========================================================================
+    # Service refill window helper
+    # =========================================================================
+    def _is_in_service_refill_window(self):
+        """Return (in_window, refill_end_label) where refill_end_label is a
+        human-readable string like '5:00 PM' to show in the UI message.
+        Returns (False, None) when no window is configured or current time is
+        outside it.
+        """
+        if not self._service_refill_start or not self._service_refill_end:
+            return False, None
+        from datetime import datetime as _dt
+        now_t = _dt.now().time()
+        s = self._service_refill_start
+        e = self._service_refill_end
+        in_window = s <= now_t <= e
+        if in_window:
+            # Format e.g. "5:00 PM"
+            label = _dt.combine(_dt.today(), e).strftime("%I:%M %p").lstrip("0")
+            return True, label
+        return False, None
 
     # =========================================================================
     # Operating hours — auto OFFLINE at close, auto ONLINE 40 min before open
@@ -1093,11 +1136,19 @@ class ChaiOrderingApp(App):
                 and not getattr(self, '_dispensing_cups', False)
                 and current_page not in in_flight_pages
                 and current_page != 'machine_empty'):
-            print(f"📦 set_local_cups_count: {count} cups (<= {MACHINE_EMPTY_THRESHOLD}) on a live page — navigating to machine_empty")
-            def _show_empty(dt):
-                self.machine_empty_page.set_mode('empty')
-                self.show_page('machine_empty')
-            Clock.schedule_once(_show_empty, 0)
+            in_window, refill_label = self._is_in_service_refill_window()
+            if in_window:
+                print(f"📦 set_local_cups_count: {count} cups during service window — showing service_refill")
+                def _show_service_refill(dt, label=refill_label):
+                    self.machine_empty_page.set_mode('service_refill', refill_label=label)
+                    self.show_page('machine_empty')
+                Clock.schedule_once(_show_service_refill, 0)
+            else:
+                print(f"📦 set_local_cups_count: {count} cups (<= {MACHINE_EMPTY_THRESHOLD}) on a live page — navigating to machine_empty")
+                def _show_empty(dt):
+                    self.machine_empty_page.set_mode('empty')
+                    self.show_page('machine_empty')
+                Clock.schedule_once(_show_empty, 0)
 
     def decrement_local_cups(self, num_cups=1):
         """Decrement local cups count (when dispensing)"""
@@ -1113,11 +1164,19 @@ class ChaiOrderingApp(App):
             # that with machine_empty would cut off the dispensing animation and
             # skip the thank-you page.
             if count <= MACHINE_EMPTY_THRESHOLD and not getattr(self, '_dispensing_cups', False):
-                print(f"📦 Cups at {count} (<= {MACHINE_EMPTY_THRESHOLD}, no active order) — navigating to machine_empty")
-                def _show_empty(dt):
-                    self.machine_empty_page.set_mode('empty')
-                    self.show_page('machine_empty')
-                Clock.schedule_once(_show_empty, 2.0)  # small delay so thank_you can show first
+                in_window, refill_label = self._is_in_service_refill_window()
+                if in_window:
+                    print(f"📦 Cups at {count} during service window — showing service_refill")
+                    def _show_service_refill2(dt, label=refill_label):
+                        self.machine_empty_page.set_mode('service_refill', refill_label=label)
+                        self.show_page('machine_empty')
+                    Clock.schedule_once(_show_service_refill2, 2.0)
+                else:
+                    print(f"📦 Cups at {count} (<= {MACHINE_EMPTY_THRESHOLD}, no active order) — navigating to machine_empty")
+                    def _show_empty(dt):
+                        self.machine_empty_page.set_mode('empty')
+                        self.show_page('machine_empty')
+                    Clock.schedule_once(_show_empty, 2.0)  # small delay so thank_you can show first
 
             # Check if cups reached the canister-low alert threshold and alert hasn't been sent
             print(f"🔍 DEBUG: after decrement count={count}, canister_alert_sent={self.canister_alert_sent}")

@@ -118,19 +118,22 @@ class MachineEmptyPage(Screen):
         
         self.add_widget(main_layout)
     
-    def set_mode(self, mode):
-        """Switch between 'empty' (cups = 0), 'offline' (ESP32/machine offline),
-        and 'water_low' (ESP32 reported waterLevelLow=True).
+    def set_mode(self, mode, refill_label=None):
+        """Switch between 'empty', 'offline', 'water_low', and 'service_refill'.
 
-        'offline'/'water_low' are genuine hardware/connectivity problems, so
-        they show "Under Maintenance". 'empty' is just a normal low-stock
-        refill, not a fault, so it gets its own reassuring message instead.
+        'offline'/'water_low' are genuine hardware/connectivity problems → "Under Maintenance".
+        'empty' is a normal low-stock refill → reassuring "Refill on its way" message.
+        'service_refill' is a scheduled refill window → shows when the refill is coming.
         """
         self.current_mode = mode
         if mode == 'offline' or mode == 'water_low':
             self.title_label.text = "Under Maintenance"
             self.subtitle_label.text = "We'll be back soon!"
             self.info_label.text = "Sorry for the inconvenience\nPlease check back shortly"
+        elif mode == 'service_refill':
+            self.title_label.text = "We'll be back soon!"
+            self.subtitle_label.text = f"Refill at {refill_label}" if refill_label else "Refill coming soon"
+            self.info_label.text = "Please visit us again after the refill"
         else:
             self.title_label.text = "We'll be back soon!"
             self.subtitle_label.text = "Refill on its way"
