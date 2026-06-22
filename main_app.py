@@ -712,6 +712,8 @@ class ChaiOrderingApp(App):
             self.api_client.report_machine_status(self.MACHINE_ID, 'offline')
         except Exception:
             pass
+        # Slow down the heartbeat interval to 10 minutes (600s) during closed hours to save database writes
+        self.start_scheduled_flush_monitor(600)
         def _ui(dt):
             self.machine_empty_page.set_mode('offline')
             self.show_page('machine_empty')
@@ -782,6 +784,8 @@ class ChaiOrderingApp(App):
             target=lambda: self.api_client.report_machine_status(self.MACHINE_ID, 'online'),
             daemon=True
         ).start()
+        # Restore the heartbeat interval to 1 minute (60s) during active hours
+        self.start_scheduled_flush_monitor(60)
         # Mirrors _operating_go_offline() setting previous_machine_state on the
         # main thread — without this, it stays "offline" until the
         # machine_empty page's own 3s poller happens to notice ESP32 is back
@@ -998,15 +1002,15 @@ class ChaiOrderingApp(App):
 
     # *** SCHEDULED FLUSH MONITOR (Kulhad API-driven) ***
 
-    def start_scheduled_flush_monitor(self):
+    def start_scheduled_flush_monitor(self, interval=60):
         """Start a periodic check that polls the Kulhad API for the flush schedule,
         operating hours, and manual online/offline commands, applying any changes.
         """
         self.stop_scheduled_flush_monitor()
         self.scheduled_flush_check_event = Clock.schedule_interval(
-            self._check_scheduled_flush, 60  # every 1 minute — keeps manual Kulhad toggles responsive
+            self._check_scheduled_flush, interval
         )
-        print("🕐 Scheduled flush monitor started (check every 1 min)")
+        print(f"🕐 Scheduled flush monitor started (check every {interval}s)")
 
     def stop_scheduled_flush_monitor(self):
         """Stop the scheduled flush monitor."""
