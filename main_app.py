@@ -720,7 +720,12 @@ class ChaiOrderingApp(App):
         else:  # window crosses midnight
             in_open = now_t >= prestart_t or now_t < offline_t
 
-        if not in_open and self.previous_machine_state != "offline":
+        if in_open and self.previous_machine_state == "offline":
+            # Hours were extended/changed — current time is now within the open window.
+            # Bring the machine back online automatically.
+            print("🟢 [OperatingHours] Hours updated — current time is now within open window, going ONLINE")
+            threading.Thread(target=self._operating_go_online, daemon=True).start()
+        elif not in_open and self.previous_machine_state != "offline":
             print("🔴 [OperatingHours] App started inside closed window — going offline now")
             threading.Thread(target=self._operating_go_offline, daemon=True).start()
 
@@ -762,6 +767,23 @@ class ChaiOrderingApp(App):
             self.show_page('machine_empty')
             self.previous_machine_state = "offline"
             print("🔴 [OperatingHours] UI → machine_empty (closed hours)")
+        Clock.schedule_once(_ui, 0)
+
+    def _operating_go_online(self):
+        """Send ONLINE to ESP32 when hours are updated and machine should be open.
+        Mirrors _on_operating_prestart but triggered by a config change, not a timer.
+        """
+        self.send_machine_state_to_esp32("ONLINE", None)
+        try:
+            self.api_client.report_machine_status(self.MACHINE_ID, 'online')
+        except Exception:
+            pass
+        # Restore 60s heartbeat interval during active hours
+        self.start_scheduled_flush_monitor(60)
+        def _ui(dt):
+            self.previous_machine_state = "online"
+            print("🟢 [OperatingHours] UI → back to selection (hours updated — now open)")
+            self.check_heating_on_startup()   # re-check temp; navigates to heating or selection
         Clock.schedule_once(_ui, 0)
 
     # *** WATER LEVEL LOW (ESP32 health_check → waterLevelLow) ***
