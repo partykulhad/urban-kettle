@@ -16,7 +16,7 @@ from utils.api_client import ApiClient, get_localhost_session
 from utils.qr_utils import QRUtils
 from utils.hardware_monitor import hardware_monitor
 from utils.screensaver_manager import ScreensaverVideoManager
-from utils.brightness_manager import brightness_manager
+from utils.brightness_manager import brightness_manager  # Screen brightness control
 
 # Import page modules
 from ui_pages.payment_method_page import PaymentMethodPage

@@ -14,6 +14,12 @@ echo "   Dir: $APP_DIR"
 echo "   Build marker: deploy-test-001"
 echo "========================================"
 
+# ── Fix screen brightness permission (needed for brightness_manager.py) ──────
+echo "Setting backlight permissions..."
+for bl_path in /sys/class/backlight/*/brightness; do
+    [ -e "$bl_path" ] && sudo chmod a+w "$bl_path" && echo "✓ Brightness writable: $bl_path"
+done
+
 # ── Wait for X display ────────────────────────────────────────────────────────
 echo "Waiting for display server..."
 for i in $(seq 1 60); do
