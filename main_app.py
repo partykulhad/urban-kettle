@@ -16,6 +16,7 @@ from utils.api_client import ApiClient, get_localhost_session
 from utils.qr_utils import QRUtils
 from utils.hardware_monitor import hardware_monitor
 from utils.screensaver_manager import ScreensaverVideoManager
+from utils.brightness_manager import brightness_manager
 
 # Import page modules
 from ui_pages.payment_method_page import PaymentMethodPage
@@ -175,6 +176,8 @@ class ChaiOrderingApp(App):
         
         # Setup screensaver monitoring
         self.setup_screensaver_monitoring()
+        # ── Brightness: start background monitor ──────────────────────────
+        brightness_manager.start(app=self)
         
         # Setup hardware error monitoring
        #self.setup_hardware_error_monitoring()
@@ -701,6 +704,8 @@ class ChaiOrderingApp(App):
 
         self._operating_start = start_t
         self._operating_end   = end_t
+        # ── Brightness: sync operating hours for night-mode dimming ──────
+        brightness_manager.set_operating_hours(start_str, end_str)
         PRE_MINUTES = 40
 
         now       = _dt.now()
@@ -1706,6 +1711,8 @@ class ChaiOrderingApp(App):
         Window.bind(on_motion=self.reset_activity_timer)
         Window.bind(on_key_down=self.on_key_press)  # Handle ESC key for exit
         Window.bind(on_touch_down=self.reset_activity_timer)
+        # ── Brightness: wake screen on any touch ─────────────────────────
+        Window.bind(on_touch_down=brightness_manager.on_user_activity)
         
         # Start monitoring for inactivity (store reference for cleanup)
         self.activity_monitor_event = Clock.schedule_interval(self.monitor_activity, 1)
