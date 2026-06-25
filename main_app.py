@@ -2447,7 +2447,6 @@ class ChaiOrderingApp(App):
 
         skip_pages = [
             'machine_empty',      # Already on offline page
-            'screensaver',        # Screensaver active
             'place_cup',          # User placing cup
             'dispensing',         # Actively dispensing
             'thank_you',          # Showing thank you
@@ -2474,7 +2473,7 @@ class ChaiOrderingApp(App):
         reads of screen_manager.current.
         """
         try:
-            check_pages = ['payment_method', 'selection', 'payment', 'loading', 'heating']
+            check_pages = ['payment_method', 'selection', 'payment', 'loading', 'heating', 'screensaver']
 
             if current_page not in check_pages:
                 return
