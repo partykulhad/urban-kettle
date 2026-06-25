@@ -516,6 +516,20 @@ class ChaiOrderingApp(App):
             telemetry.update(get_system_health())
 
             result = self.api_client.get_machine_data(self.MACHINE_ID, telemetry=telemetry)
+            
+            # Ensure water level state stays perfectly in sync with Kulhad (fixes boot desync)
+            try:
+                from utils.hardware_monitor import hardware_monitor
+                water_low = hardware_monitor.get_water_level_low()
+                if water_low is not None and water_low != getattr(self, '_last_synced_water_low', None):
+                    # We have a desync (or this is the first boot). Sync it now!
+                    sync_res = self.api_client.report_water_level(self.MACHINE_ID, water_low)
+                    if sync_res is not None:
+                        self._last_synced_water_low = water_low
+                        print(f"🔄 [Config] Synced waterLevelLow={water_low} to Kulhad")
+            except Exception as e:
+                print(f"⚠️ [Config] Error syncing waterLevelLow: {e}")
+
             if not result or not result.get("success"):
                 print("⚠️ [Config] Could not fetch machine config from Kulhad — using cached values")
                 return
