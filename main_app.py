@@ -799,6 +799,7 @@ class ChaiOrderingApp(App):
 
     def clear_water_level_low(self):
         """waterLevelLow cleared (tank refilled) — return to selection and clear Kulhad's flag."""
+        self._water_level_low_active = False
         self.show_payment_method_page(fetch_cups=True)
         threading.Thread(
             target=lambda: self.api_client.report_water_level(self.MACHINE_ID, False),

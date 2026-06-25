@@ -213,7 +213,7 @@ class HardwareMonitor:
                 # cadence instead of freezing Kulhad on the pre-heating value.
                 if self.is_heating_mode:
                     if self.last_temperature is not None:
-                        self._send_temperature_if_changed(self.last_temperature)
+                        self._send_temperature_to_cloud(self.last_temperature)
                     time.sleep(self.CLOUD_TEMP_INTERVAL)
                     continue
 
@@ -222,7 +222,7 @@ class HardwareMonitor:
                        else self._fetch_temperature()
 
                 if temp is not None:
-                    self._send_temperature_if_changed(temp)
+                    self._send_temperature_to_cloud(temp)
                 else:
                     print("☁️ No temperature available to send to cloud")
 
@@ -232,32 +232,6 @@ class HardwareMonitor:
                 print(f"☁️ Cloud temperature loop error: {e}")
                 time.sleep(30)
     
-    def _send_temperature_if_changed(self, temperature):
-        """Send temperature to cloud only if it changes significantly or 5 minutes have passed"""
-        current_time = time.time()
-        
-        # Initialize tracking attributes if they don't exist yet (backward compatibility)
-        if not hasattr(self, '_last_reported_temp'):
-            self._last_reported_temp = None
-        if not hasattr(self, '_last_reported_time'):
-            self._last_reported_time = 0
-            
-        should_send = False
-        if self._last_reported_temp is None or self._last_reported_time == 0:
-            should_send = True
-        elif abs(float(temperature) - float(self._last_reported_temp)) >= 0.5:
-            should_send = True
-        elif (current_time - self._last_reported_time) >= 300: # 5 minutes keepalive
-            should_send = True
-            
-        if should_send:
-            self._send_temperature_to_cloud(temperature)
-            self._last_reported_temp = temperature
-            self._last_reported_time = current_time
-        else:
-            # Skip sending to save Convex DB writes when temperature is stable
-            pass
-
     def _send_temperature_to_cloud(self, temperature):
         """Send temperature to cloud API
         
