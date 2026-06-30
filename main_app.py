@@ -79,6 +79,7 @@ class ChaiOrderingApp(App):
         self.global_status_check_interval = 10  # Check every 10 seconds
         self.previous_machine_state = None  # Track previous state for logging
         self._offline_confirm_count = 0    # consecutive OFFLINE reads — debounce transient blips
+        self._manual_offline = False       # Flag to prevent auto-online if admin forced offline via Kulhad
         
         # *** Activity and hardware error monitoring ***
         self.activity_monitor_event = None
@@ -633,8 +634,10 @@ class ChaiOrderingApp(App):
                 print(f"📡 [Kulhad] Manual status change detected: {current_state} → {kulhad_status}")
                 updated.append(f"kulhadCommand={kulhad_status}")
                 if kulhad_status == "offline":
+                    self._manual_offline = True
                     threading.Thread(target=self._operating_go_offline, daemon=True).start()
                 else:
+                    self._manual_offline = False
                     self.send_machine_state_to_esp32("ONLINE", None)
                     threading.Thread(
                         target=lambda: self.api_client.report_machine_status(self.MACHINE_ID, 'online'),
@@ -2552,14 +2555,17 @@ class ChaiOrderingApp(App):
                         daemon=True
                     ).start()
                 elif is_online and self.previous_machine_state == "offline":
-                    print("🟢 Machine state changed: OFFLINE → ONLINE (ESP32)")
-                    Clock.schedule_once(lambda dt: self.check_heating_on_startup(), 0)
-                    # Notify kulhad backend
-                    threading.Thread(
-                        target=self.api_client.report_machine_status,
-                        args=(self.MACHINE_ID, 'online'),
-                        daemon=True
-                    ).start()
+                    if getattr(self, '_manual_offline', False):
+                        pass # Ignore the ESP32 being online, admin forced it offline
+                    else:
+                        print("🟢 Machine state changed: OFFLINE → ONLINE (ESP32)")
+                        Clock.schedule_once(lambda dt: self.check_heating_on_startup(), 0)
+                        # Notify kulhad backend
+                        threading.Thread(
+                            target=self.api_client.report_machine_status,
+                            args=(self.MACHINE_ID, 'online'),
+                            daemon=True
+                        ).start()
 
                 # Only update previous_machine_state from a CONFIRMED offline read or
                 # an online read — a single unconfirmed offline blip (count==1) must
@@ -2568,7 +2574,8 @@ class ChaiOrderingApp(App):
                 if confirmed_offline:
                     self.previous_machine_state = "offline"
                 elif is_online:
-                    self.previous_machine_state = "online"
+                    if not getattr(self, '_manual_offline', False):
+                        self.previous_machine_state = "online"
                 print(f"🌐 GLOBAL CHECK: ESP32 machineState = '{machine_state}' → is_online={is_online}")
 
                 # ── Water level low (ESP32 health_check → waterLevelLow) ────────
