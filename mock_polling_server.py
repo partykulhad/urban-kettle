@@ -84,6 +84,14 @@ def _pump_data():
         # Pump finished — mark completed and clear start_time so next call is idle
         s["pump_completed"]  = True
         s["pump_start_time"] = None
+        
+        # Enhance: Automatically decrement water level to simulate real dispense
+        # 1 cup = approx 10000ms pump time (assuming 1 cup ≈ 100ml)
+        cups_dispensed = duration_ms / 10000.0
+        s["water_level"] = max(0.0, s["water_level"] - cups_dispensed)
+        if s["water_level"] <= 0:
+            s["water_level_low"] = True
+            
         return {
             "component":     "pump_01",
             "pumpState":     "completed",
@@ -513,12 +521,28 @@ def _heartbeat_loop():
     """Simulate the ESP32's continuous health POSTs — keeps health_ts fresh
     so the app's staleness check (>90s → treat as hardware offline) never
     fires spuriously while the mock machine is ONLINE.
+    Also simulates realistic temperature fluctuations (cooling and heating).
     """
+    heating_active = False
+    
     while True:
         time.sleep(5)
         with _lock:
             if _state["machine_state"] == "ONLINE":
                 _state["health_ts"] = datetime.now().isoformat()
+                
+                # Enhance: Simulate boiler temperature physics
+                if heating_active:
+                    _state["temperature"] += 1.5  # Heat up quickly
+                    if _state["temperature"] >= 85.0:
+                        heating_active = False
+                else:
+                    _state["temperature"] -= 0.1  # Cool down slowly
+                    if _state["temperature"] < 78.0:
+                        heating_active = True
+                        
+                # Keep ktype relatively close to pt100
+                _state["ktype_temp"] = _state["temperature"] + 8.0
 
 
 if __name__ == "__main__":

@@ -56,7 +56,9 @@ class ChaiOrderingApp(App):
         # Variables
         self.screensaver_active = False
         self.last_activity_time = time.time()
-        self.video_path = "input.mp4"  # Default video path
+        # BUG-012: use the real production path so screensaver works from first second.
+        # The screensaver manager writes here; "input.mp4" is only a legacy fallback.
+        self.video_path = "assets/screensaver_current.mp4"
         self.current_qr_code_id = ""  # Store the current QR code ID
         self.status_check_event = None  # For tracking the status check timer
         
@@ -70,16 +72,21 @@ class ChaiOrderingApp(App):
         # *** LOCAL CUPS COUNTER - Fetch from API only on state transitions ***
         self.local_cups_count = None  # Store cups count locally
         self.cups_count_initialized = False  # Track if we've fetched initial count
+        # BUG-002: lock protecting local_cups_count and all reads/writes from any thread
+        self._cups_lock = threading.Lock()
         
         # *** Canister level alert tracking ***
         self.canister_alert_sent = False  # Track if alert has been sent for cups = 5
+        # BUG-001: lock protecting canister_alert_sent — written from background threads
+        self._canister_alert_lock = threading.Lock()
         
         # *** Global machine status monitoring ***
         self.global_status_monitor_event = None
         self.global_status_check_interval = 10  # Check every 10 seconds
         self.previous_machine_state = None  # Track previous state for logging
         self._offline_confirm_count = 0    # consecutive OFFLINE reads — debounce transient blips
-        self._manual_offline = False       # Flag to prevent auto-online if admin forced offline via Kulhad
+        # BUG-003: _manual_offline is persisted to disk so it survives crashes/restarts.
+        self._manual_offline = self._load_manual_offline_state()
         
         # *** Activity and hardware error monitoring ***
         self.activity_monitor_event = None
@@ -199,6 +206,19 @@ class ChaiOrderingApp(App):
             Window.resizable = False
             Window.fullscreen = 'auto'
             Window.rotation = 180  # Physical screen is mounted upside-down
+            
+        # Start brightness manager
+        self._brightness_touch_handler = None  # BUG-005: keep ref for proper unbind in on_stop
+        try:
+            from utils.brightness_manager import brightness_manager
+            brightness_manager.start(app=self)
+            # BUG-007: also wake the hardware display when screensaver deactivates on touch
+            self._brightness_touch_handler = lambda w, t: brightness_manager.on_user_activity()
+            Window.bind(on_touch_down=self._brightness_touch_handler)
+            print("🔆 Brightness manager started")
+        except Exception as e:
+            print(f"⚠️ Brightness manager failed to start: {e}")
+            
         # Start hardware monitoring service
         hardware_monitor.start()
         
@@ -280,6 +300,32 @@ class ChaiOrderingApp(App):
 
         return self.screen_manager
 
+    # =========================================================================
+    # BUG-003: Persist _manual_offline so it survives crashes and restarts
+    # =========================================================================
+    _MANUAL_OFFLINE_FILE = "/tmp/uk_manual_offline.flag"
+
+    @staticmethod
+    def _load_manual_offline_state() -> bool:
+        """Read the persisted manual-offline flag from disk.
+        Returns False if the file does not exist (first boot or flag was cleared)."""
+        try:
+            return os.path.exists(ChaiOrderingApp._MANUAL_OFFLINE_FILE)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _save_manual_offline_state(value: bool):
+        """Persist or clear the manual-offline flag on disk."""
+        try:
+            if value:
+                open(ChaiOrderingApp._MANUAL_OFFLINE_FILE, 'w').close()
+            elif os.path.exists(ChaiOrderingApp._MANUAL_OFFLINE_FILE):
+                os.remove(ChaiOrderingApp._MANUAL_OFFLINE_FILE)
+        except Exception as e:
+            print(f"⚠️ [ManualOffline] Could not persist flag: {e}")
+
+
     def show_page(self, page_name):
         """Show a page by name"""
         self.screen_manager.current = page_name
@@ -297,6 +343,12 @@ class ChaiOrderingApp(App):
         etc.) goes through here, so a single guard is enough to block orders while
         the machine is cleaning itself.
         """
+        # BUG-004: cancel any in-flight loading timeout so it doesn't fire
+        # show_error_fallback() after the user has already navigated away.
+        # The QR background thread will self-cancel via update_payment_page's
+        # page-check guard if it completes after this point.
+        self.cancel_loading_timeout()
+
         self._pending_cups_after_heating = None  # safety reset
         self._pending_rfid_dispense_after_heating = False  # safety reset
 
@@ -513,7 +565,16 @@ class ChaiOrderingApp(App):
 
             # Remote monitoring: piggyback current page + Pi system health on
             # this same 60s call rather than a separate polling cycle.
-            telemetry = {"currentPage": getattr(self, '_current_page', None)}
+            page = getattr(self, '_current_page', None)
+            if page == 'machine_empty':
+                try:
+                    mode = getattr(self.machine_empty_page, 'current_mode', 'empty')
+                    if mode != 'empty':
+                        page = f"machine_empty_{mode}"
+                except Exception:
+                    pass
+
+            telemetry = {"currentPage": page}
             telemetry.update(get_system_health())
 
             result = self.api_client.get_machine_data(self.MACHINE_ID, telemetry=telemetry)
@@ -635,9 +696,11 @@ class ChaiOrderingApp(App):
                 updated.append(f"kulhadCommand={kulhad_status}")
                 if kulhad_status == "offline":
                     self._manual_offline = True
+                    self._save_manual_offline_state(True)   # BUG-003: persist
                     threading.Thread(target=self._operating_go_offline, daemon=True).start()
                 else:
                     self._manual_offline = False
+                    self._save_manual_offline_state(False)  # BUG-003: persist
                     self.send_machine_state_to_esp32("ONLINE", None)
                     threading.Thread(
                         target=lambda: self.api_client.report_machine_status(self.MACHINE_ID, 'online'),
@@ -719,9 +782,21 @@ class ChaiOrderingApp(App):
         self._operating_start = start_t
         self._operating_end   = end_t
         PRE_MINUTES = 40
-
+        POST_MINUTES = 30
+        
         now       = _dt.now()
         now_t     = now.time()
+
+        # Notify brightness manager with the ACTUAL offline time (including grace period)
+        # so it doesn't physically turn the screen off while the machine is still serving.
+        try:
+            offline_dt_for_bm = _dt.combine(now.date(), end_t) + _td(minutes=POST_MINUTES)
+            offline_str = offline_dt_for_bm.strftime('%H:%M')
+            from utils.brightness_manager import brightness_manager
+            brightness_manager.set_operating_hours(start_str, offline_str)
+        except Exception:
+            pass
+
         prestart_t = (_dt.combine(now.date(), start_t) - _td(minutes=PRE_MINUTES)).time()
 
         print(f"🕐 [OperatingHours] Open {start_t.strftime('%I:%M %p')} → "
@@ -730,7 +805,6 @@ class ChaiOrderingApp(App):
 
         # ── Are we currently in the closed window? ──────────────────────────
         # Open window: prestart_t … (end_t + 30 min grace)
-        POST_MINUTES = 30
         offline_t = (_dt.combine(now.date(), end_t) + _td(minutes=POST_MINUTES)).time()
         if prestart_t < offline_t:
             in_open = prestart_t <= now_t < offline_t
@@ -832,11 +906,12 @@ class ChaiOrderingApp(App):
         print("🔴 [OperatingHours] Closing time reached — checking before sending OFFLINE")
         Clock.schedule_once(self._operating_end_check, 0)
         # Reschedule 1 second later so "now" is clearly past the trigger point
+        # BUG-010: use 24h format (%H:%M) — 12h format fails at midnight (12:00 AM vs 00:00)
         if self._operating_start and self._operating_end:
             Clock.schedule_once(
                 lambda dt: self._schedule_operating_hours(
-                    self._operating_start.strftime('%I:%M %p'),
-                    self._operating_end.strftime('%I:%M %p')
+                    self._operating_start.strftime('%H:%M'),
+                    self._operating_end.strftime('%H:%M')
                 ), 1
             )
 
@@ -878,11 +953,12 @@ class ChaiOrderingApp(App):
         Clock.schedule_once(lambda dt: setattr(self, 'previous_machine_state', 'online'), 0)
         print("🟢 [OperatingHours] ESP32 ONLINE sent — machine will heat up before opening")
         # Reschedule for tomorrow
+        # BUG-010: 24h format — matches primary parse format in _parse_operating_time
         if self._operating_start and self._operating_end:
             Clock.schedule_once(
                 lambda dt: self._schedule_operating_hours(
-                    self._operating_start.strftime('%I:%M %p'),
-                    self._operating_end.strftime('%I:%M %p')
+                    self._operating_start.strftime('%H:%M'),
+                    self._operating_end.strftime('%H:%M')
                 ), 1
             )
 
@@ -999,24 +1075,27 @@ class ChaiOrderingApp(App):
         self._pending_refill_flush = True
         self.check_heating_on_startup()
 
-    def _trigger_refill_flush(self):
+    def _trigger_refill_flush(self, _retry_count=0):
         """Navigate to flush page and launch refill flush thread.
-        Guard: if another flush (e.g. the idle auto-flush, armed right after the
-        last dispense — which is exactly when cups hit 0) is already running,
-        defer and retry shortly instead of dropping the refill flush entirely.
-        Both flush paths reset flush_in_progress in a finally block, so this
-        always resolves within one flush cycle (~20-30s), never indefinitely.
+        Guard: if another flush is already running, defer up to 3 times (15s max)
+        rather than looping forever when water_flush is consistently failing.
         """
+        # BUG-006: cap retries so a persistent water_flush failure doesn't loop forever
+        _MAX_DEFER_RETRIES = 3
         if getattr(self, 'flush_in_progress', False):
-            print("⚠️ [RefillFlush] Another flush already in progress — deferring, retrying in 5s")
+            if _retry_count >= _MAX_DEFER_RETRIES:
+                print("❌ [RefillFlush] Gave up waiting for flush to finish after "
+                      f"{_MAX_DEFER_RETRIES} retries — going to home")
+                self._pending_refill_flush = False
+                Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 0)
+                return
+            print(f"⚠️ [RefillFlush] Another flush already in progress — deferring, retry {_retry_count + 1}/{_MAX_DEFER_RETRIES}")
             self._pending_refill_flush = True  # don't lose the request
-            # A flush IS actively running right now — show the flush page during
-            # the wait too, instead of leaving the user looking at machine_empty
-            # while the pump is audibly running.
+            # Show flush page during the wait.
             self.flush_page.set_note('Waiting for current flush to finish...')
             self.flush_page.show_waiting()
             self.show_page('flush')
-            Clock.schedule_once(lambda dt: self._trigger_refill_flush(), 5)
+            Clock.schedule_once(lambda dt: self._trigger_refill_flush(_retry_count + 1), 5)
             return
 
         # Cancel any pending (not-yet-fired) idle-flush timer — refill flush takes priority.
@@ -1078,6 +1157,7 @@ class ChaiOrderingApp(App):
             print(f"❌ [RefillFlush] Error: {e}")
         finally:
             self.flush_in_progress = False
+            self._pending_refill_flush = False  # BUG-006: always clear so no spurious retries after abort
             Clock.schedule_once(lambda dt: self.flush_page.set_phase('done'), 0)
             Clock.schedule_once(lambda dt: self.flush_page.set_note(''), 0)
             print("✅ [RefillFlush] Complete — going to selection")
@@ -1139,24 +1219,26 @@ class ChaiOrderingApp(App):
         self.cups_count_initialized = True
         print(f"📦 Local cups count set to: {count}")
 
-        # Check if cups are at the canister-low alert threshold and alert hasn't been sent
+        # BUG-001: use lock to prevent race between background threads
         from config import CANISTER_ALERT_THRESHOLD, MACHINE_EMPTY_THRESHOLD
-        print(f"🔍 DEBUG: count={count}, canister_alert_sent={self.canister_alert_sent}")
-        if count <= CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
-            print(f"🔔 Cups are at {CANISTER_ALERT_THRESHOLD}! Sending canister alert...")
-            # canister_alert_sent is set inside send_canister_alert() itself, only on
-            # confirmed API success — not here, so a failed call gets retried on the
-            # next threshold check instead of being silently suppressed forever.
-            self.send_canister_alert()
-        # Reset alert flag if cups go above the threshold (refilled)
-        elif count > CANISTER_ALERT_THRESHOLD:
-            if self.canister_alert_sent:
-                print(f"🔄 Cups refilled to {count}, resetting alert flag")
-                threading.Thread(
-                    target=lambda: self.api_client.resolve_refill_alert(self.MACHINE_ID),
-                    daemon=True
-                ).start()
-            self.canister_alert_sent = False
+        with self._canister_alert_lock:
+            need_alert = (count <= CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent)
+            need_reset = (count > CANISTER_ALERT_THRESHOLD and self.canister_alert_sent)
+            # Tentatively mark True inside the lock so no other thread races in
+            if need_alert:
+                self.canister_alert_sent = True  # hold the slot
+            if need_reset:
+                self.canister_alert_sent = False
+
+        if need_alert:
+            print(f"🔔 Cups at {CANISTER_ALERT_THRESHOLD} — sending canister alert...")
+            self.send_canister_alert()  # will re-set True on success, False on failure
+        elif need_reset:
+            print(f"🔄 Cups refilled to {count}, resetting alert flag")
+            threading.Thread(
+                target=lambda: self.api_client.resolve_refill_alert(self.MACHINE_ID),
+                daemon=True
+            ).start()
 
         # Update cups display on both pages
         if hasattr(self.payment_method_page, 'update_cups_display'):
@@ -1191,58 +1273,60 @@ class ChaiOrderingApp(App):
                 Clock.schedule_once(_show_empty, 0)
 
     def decrement_local_cups(self, num_cups=1):
-        """Decrement local cups count (when dispensing)"""
-        if self.local_cups_count is not None:
+        """Decrement local cups count (when dispensing).
+        BUG-002: protected by _cups_lock — safe to call from any thread.
+        """
+        with self._cups_lock:
+            if self.local_cups_count is None:
+                print("⚠️ Cannot decrement cups - local count not initialized")
+                return
             from config import CANISTER_ALERT_THRESHOLD, MACHINE_EMPTY_THRESHOLD
             self.local_cups_count = max(0, self.local_cups_count - num_cups)
             count = self.local_cups_count  # snapshot for lambdas — avoids stale-reference bug
-            print(f"📦 Local cups decremented by {num_cups}, new count: {count}")
+        print(f"📦 Local cups decremented by {num_cups}, new count: {count}")
 
-            # Only navigate to machine_empty if no order is actively in progress.
-            # During a multi-cup order the count can legitimately hit the empty
-            # threshold mid-dispense (user ordered the last N cups). Interrupting
-            # that with machine_empty would cut off the dispensing animation and
-            # skip the thank-you page.
-            if count <= MACHINE_EMPTY_THRESHOLD and not getattr(self, '_dispensing_cups', False):
-                in_window, refill_label = self._is_in_service_refill_window()
-                if in_window:
-                    print(f"📦 Cups at {count} during service window — showing service_refill")
-                    def _show_service_refill2(dt, label=refill_label):
-                        self.machine_empty_page.set_mode('service_refill', refill_label=label)
-                        self.show_page('machine_empty')
-                    Clock.schedule_once(_show_service_refill2, 2.0)
-                else:
-                    print(f"📦 Cups at {count} (<= {MACHINE_EMPTY_THRESHOLD}, no active order) — navigating to machine_empty")
-                    def _show_empty(dt):
-                        self.machine_empty_page.set_mode('empty')
-                        self.show_page('machine_empty')
-                    Clock.schedule_once(_show_empty, 2.0)  # small delay so thank_you can show first
+        # Only navigate to machine_empty if no order is actively in progress.
+        # During a multi-cup order the count can legitimately hit the empty
+        # threshold mid-dispense. Interrupting that would cut off the animation.
+        if count <= MACHINE_EMPTY_THRESHOLD and not getattr(self, '_dispensing_cups', False):
+            in_window, refill_label = self._is_in_service_refill_window()
+            if in_window:
+                print(f"📦 Cups at {count} during service window — showing service_refill")
+                def _show_service_refill2(dt, label=refill_label):
+                    self.machine_empty_page.set_mode('service_refill', refill_label=label)
+                    self.show_page('machine_empty')
+                Clock.schedule_once(_show_service_refill2, 2.0)
+            else:
+                print(f"📦 Cups at {count} (≤ {MACHINE_EMPTY_THRESHOLD}, no active order) — navigating to machine_empty")
+                def _show_empty(dt):
+                    self.machine_empty_page.set_mode('empty')
+                    self.show_page('machine_empty')
+                Clock.schedule_once(_show_empty, 2.0)  # small delay so thank_you can show first
 
-            # Check if cups reached the canister-low alert threshold and alert hasn't been sent
-            print(f"🔍 DEBUG: after decrement count={count}, canister_alert_sent={self.canister_alert_sent}")
-            if count <= CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent:
-                print(f"🔔 Cups reached {CANISTER_ALERT_THRESHOLD} after dispensing! Sending canister alert...")
-                # canister_alert_sent is set inside send_canister_alert() itself, only
-                # on confirmed API success — see set_local_cups_count for why.
-                self.send_canister_alert()
-
-            # Reset alert flag if cups go above the threshold (refilled)
-            elif count > CANISTER_ALERT_THRESHOLD:
-                if self.canister_alert_sent:
-                    print(f"🔄 Cups refilled to {count} after dispensing, resetting alert flag")
-                    threading.Thread(
-                        target=lambda: self.api_client.resolve_refill_alert(self.MACHINE_ID),
-                        daemon=True
-                    ).start()
+        # BUG-001: use lock for the canister alert check-then-set
+        with self._canister_alert_lock:
+            need_alert = (count <= CANISTER_ALERT_THRESHOLD and not self.canister_alert_sent)
+            need_reset = (count > CANISTER_ALERT_THRESHOLD and self.canister_alert_sent)
+            if need_alert:
+                self.canister_alert_sent = True  # hold the slot
+            if need_reset:
                 self.canister_alert_sent = False
 
-            # Update cups display on both pages (use snapshot to avoid stale reference)
-            if hasattr(self.payment_method_page, 'update_cups_display'):
-                Clock.schedule_once(lambda dt, c=count: self.payment_method_page.update_cups_display(c))
-            if hasattr(self.selection_page, 'update_cups_display'):
-                Clock.schedule_once(lambda dt, c=count: self.selection_page.update_cups_display(c))
-        else:
-            print("⚠️ Cannot decrement cups - local count not initialized")
+        if need_alert:
+            print(f"🔔 Cups reached {CANISTER_ALERT_THRESHOLD} after dispensing — sending canister alert...")
+            self.send_canister_alert()
+        elif need_reset:
+            print(f"🔄 Cups above threshold after decrement, resetting alert flag")
+            threading.Thread(
+                target=lambda: self.api_client.resolve_refill_alert(self.MACHINE_ID),
+                daemon=True
+            ).start()
+
+        # Update cups display on both pages (use snapshot to avoid stale reference)
+        if hasattr(self.payment_method_page, 'update_cups_display'):
+            Clock.schedule_once(lambda dt, c=count: self.payment_method_page.update_cups_display(c))
+        if hasattr(self.selection_page, 'update_cups_display'):
+            Clock.schedule_once(lambda dt, c=count: self.selection_page.update_cups_display(c))
     
     def fetch_and_store_cups_count(self):
         """Fetch cups count from API and store locally (called on state transitions)"""
@@ -1255,11 +1339,11 @@ class ChaiOrderingApp(App):
                     cups_count = cups_data.get("cups", 0)
                     Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
                     print(f"✅ Fetched and stored cups count: {cups_count}")
-                    
-                    # Reset alert flag if cups are refilled (> threshold)
+                    # BUG-001: use lock to reset the flag from background thread
                     from config import CANISTER_ALERT_THRESHOLD
                     if cups_count > CANISTER_ALERT_THRESHOLD:
-                        self.canister_alert_sent = False
+                        with self._canister_alert_lock:
+                            self.canister_alert_sent = False
                 else:
                     print("❌ Failed to fetch cups count from API")
             except Exception as e:
@@ -1269,30 +1353,30 @@ class ChaiOrderingApp(App):
         threading.Thread(target=fetch_in_background, daemon=True).start()
     
     def send_canister_alert(self):
-        """Send canister level alert when cups reach the alert threshold"""
+        """Send canister level alert when cups reach the alert threshold.
+        BUG-001: uses _canister_alert_lock — sets flag True only on API success,
+        False on failure (so next threshold check retries without sending duplicates).
+        """
         from config import CANISTER_ALERT_THRESHOLD
-        print(f"🔔 DEBUG: send_canister_alert() called for machine {self.MACHINE_ID}")
+        print(f"🔔 send_canister_alert() called for machine {self.MACHINE_ID}")
 
         def send_alert_in_background():
             try:
-                print(f"🔔 DEBUG: Calling API check_canister_level()...")
                 result = self.api_client.check_canister_level(self.MACHINE_ID, canister_level=CANISTER_ALERT_THRESHOLD)
-                if result:
-                    print(f"✅ DEBUG: Canister alert API call successful")
-                    # Only mark as sent on confirmed success — if this call fails
-                    # (network blip, Kulhad cold start), canister_alert_sent must
-                    # stay False so the next threshold check retries, instead of
-                    # silently giving up until cups are refilled above threshold.
-                    self.canister_alert_sent = True
-                else:
-                    print(f"❌ DEBUG: Canister alert API call failed - no result")
+                with self._canister_alert_lock:
+                    if result:
+                        print("✅ Canister alert sent successfully")
+                        self.canister_alert_sent = True
+                    else:
+                        # Failed — release the slot so next check retries
+                        print("❌ Canister alert API call failed — will retry on next threshold check")
+                        self.canister_alert_sent = False
             except Exception as e:
-                print(f"❌ DEBUG: Error sending canister alert: {e}")
+                with self._canister_alert_lock:
+                    self.canister_alert_sent = False
+                print(f"❌ Error sending canister alert: {e}")
         
-        # Run in background thread
-        print(f"🔔 DEBUG: Starting background thread for canister alert...")
         threading.Thread(target=send_alert_in_background, daemon=True).start()
-        print(f"🔔 DEBUG: Background thread started")
     
     def handle_dispense_error(self, status_code):
         """Route ESP32 dispense error codes to the appropriate page.
@@ -1374,19 +1458,14 @@ class ChaiOrderingApp(App):
                 print(f"✅ Backend synced - reduced {cups_to_reduce} cup(s)")
                 print(f"   Previous cups: {result.get('previousCups')}")
                 print(f"   New cups: {result.get('newCups')}")
-                print(f"   Message: {result.get('message')}")
             else:
-                print("❌ Failed to sync cups reduction to backend — retrying once...")
+                # BUG-008: Do NOT retry reduce_cups — on a timeout the server likely
+                # already processed the request; a retry would double-reduce the count.
+                # Restore local counter instead to prevent divergence.
+                print("❌ Failed to sync cups reduction to backend (no retry to avoid double-reduction)")
                 print(f"   API Response: {result}")
-                # Retry once
-                result = self.api_client.reduce_cups(self.MACHINE_ID, cups_to_reduce)
-                if result and result.get("success", False):
-                    print(f"✅ Retry succeeded — backend synced {cups_to_reduce} cup(s)")
-                else:
-                    # Both attempts failed — restore local counter to prevent divergence
-                    print("❌ Retry also failed — restoring local counter to avoid UI divergence")
-                    if count_before is not None:
-                        Clock.schedule_once(lambda dt: self.set_local_cups_count(count_before))
+                if count_before is not None:
+                    Clock.schedule_once(lambda dt: self.set_local_cups_count(count_before))
                     
         except Exception as e:
             print(f"❌ Error calling reduce cups API: {e}")
@@ -1767,13 +1846,8 @@ class ChaiOrderingApp(App):
         # machine_empty in 'offline' mode shows the "Under Maintenance" message —
         # that must stay visible, so the screensaver is blocked in that state.
         current_page = self.screen_manager.current
-        machine_empty_is_offline = (
-            current_page == 'machine_empty'
-            and getattr(self.machine_empty_page, 'current_mode', 'empty') == 'offline'
-        )
         is_screensaver_eligible_page = (
-            current_page in ['payment_method', 'selection', 'machine_empty']
-            and not machine_empty_is_offline
+            current_page in ['payment_method', 'selection']
         )
         
         if elapsed >= self.INACTIVE_TIMEOUT and not self.screensaver_active and is_screensaver_eligible_page:
@@ -1797,6 +1871,15 @@ class ChaiOrderingApp(App):
         self.screensaver_active = False
         print("⚡ Deactivating screensaver - navigating immediately...")
 
+        # BUG-007: explicitly wake the hardware display (HDMI) here —
+        # the Window.bind on_touch_down lambda may fire AFTER this method
+        # when the device was in hardware Night Mode (HDMI physically off).
+        try:
+            from utils.brightness_manager import brightness_manager
+            brightness_manager.on_user_activity()
+        except Exception:
+            pass
+
         # If machine went offline during the screensaver (or was already offline when
         # it activated), return to the maintenance page instead of the home page so
         # the user can't attempt an order while the ESP32 is unreachable.
@@ -1817,8 +1900,14 @@ class ChaiOrderingApp(App):
             self.show_water_level_low()
             return
 
-        # INSTANT NAVIGATION - show home page immediately with local cups count
-        self.show_payment_method_page()
+        # INSTANT NAVIGATION - return to the page they were on if they are staff
+        staff_pages = ['machine_empty', 'admin_login', 'maintenance', 'diagnostics', 'rfid_assign']
+        prev = getattr(self, 'previous_page_before_screensaver', None)
+        
+        if prev in staff_pages:
+            self.show_page(prev)
+        else:
+            self.show_payment_method_page()
         
         # No API call needed - local cups count is already available
         print(f"📦 Using local cups count: {self.local_cups_count}")
@@ -2258,6 +2347,10 @@ class ChaiOrderingApp(App):
                 Window.unbind(on_motion=self.reset_activity_timer)
                 Window.unbind(on_key_down=self.on_key_press)
                 Window.unbind(on_touch_down=self.reset_activity_timer)
+                # BUG-005: unbind the brightness handler using its stored reference
+                if getattr(self, '_brightness_touch_handler', None):
+                    Window.unbind(on_touch_down=self._brightness_touch_handler)
+                    self._brightness_touch_handler = None
             except Exception as e:
                 print(f"Error unbinding window events: {e}")
             
@@ -2463,7 +2556,7 @@ class ChaiOrderingApp(App):
         current_page = self.screen_manager.current  # safe: called on main thread
 
         skip_pages = [
-            'machine_empty',      # Already on offline page
+            'machine_empty',      # BUG-009: stale cloud cups data must NOT yank off maintenance page
             'place_cup',          # User placing cup
             'dispensing',         # Actively dispensing
             'thank_you',          # Showing thank you
@@ -2479,10 +2572,16 @@ class ChaiOrderingApp(App):
             return
 
         self._checking_global_status = True
-        threading.Thread(
-            target=lambda: self._do_global_status_check(current_page),
-            daemon=True
-        ).start()
+        # BUG-013: wrap thread.start() in try/finally so the flag can't get
+        # permanently stuck True if thread spawn raises (e.g. OS resource exhaustion).
+        try:
+            threading.Thread(
+                target=lambda: self._do_global_status_check(current_page),
+                daemon=True
+            ).start()
+        except Exception as e:
+            print(f"⚠️ [GlobalStatus] Failed to start monitor thread: {e}")
+            self._checking_global_status = False
 
     def _do_global_status_check(self, current_page):
         """Perform global machine status check - only on home/selection/payment pages.
