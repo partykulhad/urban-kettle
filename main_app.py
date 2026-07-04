@@ -139,8 +139,9 @@ class ChaiOrderingApp(App):
         self._prefetching_counts = set()  # counts currently being fetched
         self._prefetch_abandoned = set()  # in-flight counts that must cancel on completion
         
-        # Create screen manager with no transition for faster page changes
-        # SlideTransition can cause perceived lag, NoTransition is instant
+        print("====== BUILDING UI ======")
+        
+        # Initialize screen manager and screens
         self.screen_manager = ScreenManager(transition=NoTransition())
         
         # Initialize pages
@@ -227,7 +228,6 @@ class ChaiOrderingApp(App):
         try:
             from utils.rfid_aes_auth import RFIDAESAuth
             self.rfid_auth_handler = RFIDAESAuth(
-                base_url="https://www.ukteawallet.com",
                 machine_id=RFID_MACHINE_ID
             )
             if self.rfid_auth_handler.reader_active:
@@ -298,7 +298,18 @@ class ChaiOrderingApp(App):
         
         self.screensaver_video_manager.update_video_async(callback=on_video_ready)
 
+        # Setup Watchdog heartbeat
+        self._watchdog_heartbeat_event = Clock.schedule_interval(self._write_watchdog_heartbeat, 15)
+        self._write_watchdog_heartbeat(0)
+
         return self.screen_manager
+
+    def _write_watchdog_heartbeat(self, dt):
+        try:
+            with open("/tmp/urban_kettle_heartbeat", "w") as f:
+                f.write(str(time.time()))
+        except Exception as e:
+            print(f"⚠️ [Watchdog] Could not write heartbeat file: {e}")
 
     # =========================================================================
     # BUG-003: Persist _manual_offline so it survives crashes and restarts
@@ -576,6 +587,7 @@ class ChaiOrderingApp(App):
 
             telemetry = {"currentPage": page}
             telemetry.update(get_system_health())
+            telemetry["heating_issue"] = "true" if getattr(self, "heating_issue_active", False) else "false"
 
             result = self.api_client.get_machine_data(self.MACHINE_ID, telemetry=telemetry)
             
@@ -851,8 +863,11 @@ class ChaiOrderingApp(App):
             self.api_client.report_machine_status(self.MACHINE_ID, 'offline')
         except Exception:
             pass
-        # Slow down the heartbeat interval to 10 minutes (600s) during closed hours to save database writes
-        self.start_scheduled_flush_monitor(600)
+        # Slow down the heartbeat to 120s during closed hours.
+        # MUST stay below the 4-minute (240s) isMachineUnreachable threshold
+        # used by the Kulhad dashboard — otherwise the machine permanently shows
+        # as "Offline" even when the Pi is healthy and running.
+        self.start_scheduled_flush_monitor(120)
         def _ui(dt):
             self.machine_empty_page.set_mode('offline')
             self.show_page('machine_empty')
@@ -1186,10 +1201,18 @@ class ChaiOrderingApp(App):
         """Kivy Clock callback — offload the actual check to a background thread.
         Skips if the previous check is still running (e.g. Kulhad responding slowly)
         so overlapping requests never run concurrently.
+        A 30-second timestamp guard auto-releases the lock if the previous run hung,
+        preventing the heartbeat from being permanently blocked.
         """
+        now_ts = time.time()
+        last_start = getattr(self, '_scheduled_flush_check_start', 0)
         if getattr(self, '_scheduled_flush_check_running', False):
-            return
+            # Auto-expire the lock if it's been held for >30s (hung network call)
+            if now_ts - last_start < 30:
+                return
+            print("⚠️ [Heartbeat] Lock was held >30s — force-releasing to unblock heartbeat")
         self._scheduled_flush_check_running = True
+        self._scheduled_flush_check_start = now_ts
         threading.Thread(target=self._do_scheduled_flush_check, daemon=True).start()
 
     def _do_scheduled_flush_check(self):
@@ -1956,6 +1979,18 @@ class ChaiOrderingApp(App):
                 print(f"⚠️ check_hardware_errors background error: {e}")
             finally:
                 self._checking_hardware_errors = False
+
+            # ESP32 Disconnect Watchdog (5 minutes)
+            if error_msg == "Hardware Not Connected":
+                if not hasattr(self, '_esp32_disconnected_since') or self._esp32_disconnected_since is None:
+                    self._esp32_disconnected_since = time.time()
+                elif time.time() - self._esp32_disconnected_since > 300:
+                    print("🔴 CRITICAL: ESP32 disconnected for >5 minutes! Triggering hardware reboot...")
+                    import os
+                    os.system("sudo reboot")
+            else:
+                self._esp32_disconnected_since = None
+
             Clock.schedule_once(lambda dt: _handle_result(error_msg), 0)
 
         def _handle_result(error_msg):
@@ -2164,6 +2199,8 @@ class ChaiOrderingApp(App):
         self.heating_temp_error_count = 0
         self._heating_poll_running = False  # guard: only one read in flight at a time
         self.heating_start_time = time.time()  # used to detect a never-responding sensor
+        self.heating_last_rise_time = time.time()
+        self.heating_max_temp_seen = None
 
         def _handle_result(temp, exc):
             """Process result on the Kivy main thread."""
@@ -2209,6 +2246,21 @@ class ChaiOrderingApp(App):
             # Good read — reset error streak and update display
             self.heating_temp_error_count = 0
             self.heating_page.update_temperature(temp)
+            
+            # 5-minute temperature stagnation logic
+            if self.heating_max_temp_seen is None or temp >= self.heating_max_temp_seen + 1.0:
+                self.heating_max_temp_seen = temp
+                self.heating_last_rise_time = time.time()
+                
+                if getattr(self, 'heating_issue_active', False):
+                    self.heating_issue_active = False
+                    print("✅ Temperature is rising again, clearing heating issue alert")
+            else:
+                # Temperature hasn't risen by 1°C. Check if it's been 5 minutes
+                if time.time() - self.heating_last_rise_time > 300:
+                    if not getattr(self, 'heating_issue_active', False):
+                        self.heating_issue_active = True
+                        print(f"⚠️ Temperature stuck at {temp:.1f}°C for 5 minutes! Flagging heating_issue_active.")
 
             from config import SERVING_TEMP
             if temp >= SERVING_TEMP:
@@ -2272,6 +2324,10 @@ class ChaiOrderingApp(App):
             self.heating_check_event.cancel()
             self.heating_check_event = None
             print("⏹️ Stopped heating monitor")
+            
+        if getattr(self, 'heating_issue_active', False):
+            self.heating_issue_active = False
+            print("✅ Cleared heating issue alert on heating monitor stop")
     
     def on_key_press(self, window, key, *args):
         """Handle keyboard events"""
@@ -2465,7 +2521,6 @@ class ChaiOrderingApp(App):
                 from utils.rfid_aes_auth import RFIDAESAuth
                 from config import RFID_MACHINE_ID
                 self.rfid_auth_handler = RFIDAESAuth(
-                    base_url="https://www.ukteawallet.com",
                     machine_id=RFID_MACHINE_ID
                 )
                 if not self.rfid_auth_handler.reader_active:
