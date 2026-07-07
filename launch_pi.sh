@@ -11,13 +11,25 @@ APP_DIR="$(pwd)"
 echo "========================================"
 echo "   Urban Kettle — Starting"
 echo "   Dir: $APP_DIR"
-echo "   Build marker: deploy-test-001"
+echo "   Build marker: deploy-test-OTA-WORKS-v3.0.0"
 echo "========================================"
+
+# --- Legacy Shutdown Safeguard ---
+# If this machine pulls this code via legacy GitHub tracking, permanently disable it.
+if [[ "$APP_DIR" == *"/home/"* ]]; then
+    echo "Legacy Github installation detected. Permanently disabling the kiosk app."
+    sudo systemctl disable urban-kettle || true
+    rm -f /tmp/urban_kettle_heartbeat
+    (sleep 2 && sudo systemctl stop urban-kettle) &
+    exit 0
+fi
+# ---------------------------------
+
 
 # ── Fix screen brightness permission (needed for brightness_manager.py) ──────
 echo "Setting backlight permissions..."
 for bl_path in /sys/class/backlight/*/brightness; do
-    [ -e "$bl_path" ] && sudo chmod a+w "$bl_path" && echo "✓ Brightness writable: $bl_path"
+    [ -e "$bl_path" ] && chmod a+w "$bl_path" 2>/dev/null && echo "✓ Brightness writable: $bl_path"
 done
 
 # ── Wait for X display ────────────────────────────────────────────────────────
