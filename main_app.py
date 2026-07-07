@@ -364,14 +364,10 @@ class ChaiOrderingApp(App):
         self._pending_rfid_dispense_after_heating = False  # safety reset
 
         # Cups were just refilled — normally this runs the refill flush before
-        # going to selection. TEMPORARILY DISABLED (flush paused) — falls
-        # through to the normal show_page('selection') below instead of
-        # dead-ending here, so the customer can still order after a refill.
-        # Uncomment the Clock.schedule_once line to re-enable the flush;
-        # _trigger_refill_flush() and _run_refill_flush() are untouched.
+        # going to selection.
         if getattr(self, '_pending_refill_flush', False):
             self._pending_refill_flush = False
-            # Clock.schedule_once(lambda dt: self._trigger_refill_flush(), 0)
+            Clock.schedule_once(lambda dt: self._trigger_refill_flush(), 0)
 
         if self.flush_in_progress:
             self.flush_page.show_waiting()
@@ -541,10 +537,8 @@ class ChaiOrderingApp(App):
                     self.machine_empty_page.set_mode('empty')
                     self.show_page('machine_empty')
                 Clock.schedule_once(_show_empty_after_thankyou, 3.0)
-            # TEMPORARILY DISABLED — idle auto-flush (water + tea after
-            # flushTimeMinutes idle) paused. Uncomment to re-enable;
-            # schedule_auto_flush() and _run_auto_flush() are untouched.
-            # self.schedule_auto_flush()
+            # Idle auto-flush (water + tea after flushTimeMinutes idle)
+            self.schedule_auto_flush()
     
     def refresh_cups_count(self):
         """Refresh the cups count on home pages"""
