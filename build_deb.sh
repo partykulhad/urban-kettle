@@ -79,6 +79,14 @@ if id "urbanketl" &>/dev/null; then
     chown -R urbanketl:urbanketl /opt/urban-kettle
 elif id "pi" &>/dev/null; then
     chown -R pi:pi /opt/urban-kettle
+else
+    # Fallback to detecting the current non-root login user
+    DETECTED_USER=$(who | grep -v root | awk '{print $1}' | head -n 1)
+    if [ -n "$DETECTED_USER" ]; then
+        chown -R "$DETECTED_USER:$DETECTED_USER" /opt/urban-kettle
+    else
+        echo "⚠️ Could not detect desktop user, leaving ownership as root"
+    fi
 fi
 
 # Setup Watchdog & OTA Updater Cronjobs automatically
