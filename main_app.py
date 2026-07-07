@@ -1354,7 +1354,14 @@ class ChaiOrderingApp(App):
                 
                 if cups_data and cups_data.get("success", False):
                     cups_count = cups_data.get("cups", 0)
-                    Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
+                    
+                    # Prevent infinite flush loop: If API says 0 but hardware sensor knows
+                    # we have cups, ignore the stale API data. (Operator forgot to update dashboard)
+                    if cups_count == 0 and getattr(self, 'local_cups_count', 0) > 0:
+                        print("⚠️ API reported 0 cups, but hardware sees cups! Ignoring stale API 0 to prevent flush loop.")
+                    else:
+                        Clock.schedule_once(lambda dt: self.set_local_cups_count(cups_count))
+                        
                     print(f"✅ Fetched and stored cups count: {cups_count}")
                     # BUG-001: use lock to reset the flag from background thread
                     from config import CANISTER_ALERT_THRESHOLD
