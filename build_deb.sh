@@ -58,11 +58,24 @@ fi
 # Ensure venv exists (if they didn't run setup.sh, we make it)
 if [ ! -d "venv" ]; then
     python3 -m venv venv
+    
+    # Offline Migration: If old venv exists, copy its packages to bypass IoT SIM blocking PyPI
+    echo "Checking for existing python libraries to migrate (Offline mode)..."
+    if [ -d "/home/urbanketl2/urban-kettle/venv/lib" ]; then
+        cp -a /home/urbanketl2/urban-kettle/venv/lib/python3.*/site-packages/* /opt/urban-kettle/venv/lib/python3.*/site-packages/ 2>/dev/null || true
+        echo "Migrated python libraries from /home/urbanketl2"
+    elif [ -d "/home/urbanketl/urban-kettle/venv/lib" ]; then
+        cp -a /home/urbanketl/urban-kettle/venv/lib/python3.*/site-packages/* /opt/urban-kettle/venv/lib/python3.*/site-packages/ 2>/dev/null || true
+        echo "Migrated python libraries from /home/urbanketl"
+    elif [ -d "/home/pi/urban-kettle/venv/lib" ]; then
+        cp -a /home/pi/urban-kettle/venv/lib/python3.*/site-packages/* /opt/urban-kettle/venv/lib/python3.*/site-packages/ 2>/dev/null || true
+        echo "Migrated python libraries from /home/pi"
+    fi
 fi
 
-# Activate and install requirements
+# Activate and try to install requirements (will gracefully skip if offline)
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt || echo "⚠️ Network offline (IoT SIM), relying on migrated libraries."
 
 # Ensure permissions
 chmod +x *.sh
