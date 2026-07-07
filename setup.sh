@@ -73,13 +73,8 @@ echo "[6/6] Setting up Software Watchdog and Updater Cronjobs..."
 CRON_WATCHDOG="* * * * * $(pwd)/software_watchdog.sh"
 (crontab -l 2>/dev/null | grep -v "software_watchdog.sh"; echo "$CRON_WATCHDOG") | crontab -
 
-# OTA Update Schedule — choose one:
-# Option A: Every 5 minutes — uncomment to use
-# CRON_UPDATE="*/5 * * * * $(pwd)/update.sh"
-# Option B: Every night at 2:00 AM (production) — uncomment to use
-# CRON_UPDATE="0 2 * * * $(pwd)/update.sh"
-# Option C: Every 2 minutes (TESTING ONLY)
-CRON_UPDATE="*/2 * * * * $(pwd)/update.sh"
+# OTA Update Schedule — Runs every 1 hour
+CRON_UPDATE="0 * * * * $(pwd)/update.sh"
 (crontab -l 2>/dev/null | grep -v "update.sh"; echo "$CRON_UPDATE") | crontab -
 
 echo "✅ Watchdog and Updater added to crontab"

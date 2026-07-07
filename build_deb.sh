@@ -93,13 +93,8 @@ udevadm control --reload-rules || true
 udevadm trigger || true
 
 
-# OTA Update Schedule — choose one:
-# Option A: Every 5 minutes — uncomment to use
-# CRON_UPDATE="*/5 * * * * /opt/urban-kettle/update.sh"
-# Option B: Every night at 2:00 AM (production) — uncomment to use
-# CRON_UPDATE="0 2 * * * /opt/urban-kettle/update.sh"
-# Option C: Every 2 minutes (TESTING ONLY)
-CRON_UPDATE="*/2 * * * * /opt/urban-kettle/update.sh"
+# OTA Update Schedule — Runs every 1 hour
+CRON_UPDATE="0 * * * * /opt/urban-kettle/update.sh"
 (crontab -l 2>/dev/null | grep -v "update.sh"; echo "$CRON_UPDATE") | crontab -
 
 # Restart the service (don't fail if the service isn't active yet)
