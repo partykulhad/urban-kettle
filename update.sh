@@ -7,6 +7,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "$SCRIPT_DIR" == *"/home/"* ]]; then
     echo "Legacy installation detected in $SCRIPT_DIR. Stopping update script."
+    # Stop the running urban-kettle application
+    sudo systemctl stop urban-kettle || true
+    sudo systemctl disable urban-kettle || true
     # To fully kill the old cronjob on legacy machines:
     (crontab -l 2>/dev/null | grep -v "update.sh") | crontab - || true
     exit 0
