@@ -1014,6 +1014,10 @@ class ChaiOrderingApp(App):
         threading.Thread(target=self._run_auto_flush, daemon=True).start()
 
     def _run_auto_flush(self):
+        # --- FLUSH DISABLED BY USER REQUEST ---
+        print("⚠️ [Flush] Auto flush is DISABLED. Skipping.")
+        return
+        # --------------------------------------
         """Execute maintenance flush: water → 10 s wait → tea → done."""
         import time as _time
         from config import DEVICE_ID
@@ -1085,6 +1089,13 @@ class ChaiOrderingApp(App):
         self.check_heating_on_startup()
 
     def _trigger_refill_flush(self, _retry_count=0):
+        # --- FLUSH DISABLED BY USER REQUEST ---
+        print("⚠️ [Flush] Refill flush is DISABLED. Skipping directly to home screen.")
+        self._pending_refill_flush = False
+        self.flush_in_progress = False
+        self.show_payment_method_page(fetch_cups=True)
+        return
+        # --------------------------------------
         """Navigate to flush page and launch refill flush thread.
         Guard: if another flush is already running, defer up to 3 times (15s max)
         rather than looping forever when water_flush is consistently failing.
@@ -1271,7 +1282,13 @@ class ChaiOrderingApp(App):
         in_flight_pages = ('place_cup', 'dispensing', 'payment', 'loading',
                             'heating', 'rfid_auth', 'thank_you', 'flush')
         current_page = self.screen_manager.current
+        
+        # If hardware says empty, but API recently said we have cups, trust the operator's
+        # dashboard update and do not force the empty screen.
+        api_says_we_have_cups = getattr(self, '_last_api_cups_count', 0) > MACHINE_EMPTY_THRESHOLD
+        
         if (count <= MACHINE_EMPTY_THRESHOLD
+                and not api_says_we_have_cups
                 and not getattr(self, '_dispensing_cups', False)
                 and current_page not in in_flight_pages
                 and current_page != 'machine_empty'):
@@ -1354,6 +1371,7 @@ class ChaiOrderingApp(App):
                 
                 if cups_data and cups_data.get("success", False):
                     cups_count = cups_data.get("cups", 0)
+                    self._last_api_cups_count = cups_count
                     
                     # Prevent infinite flush loop: If API says 0 but hardware sensor knows
                     # we have cups, ignore the stale API data. (Operator forgot to update dashboard)

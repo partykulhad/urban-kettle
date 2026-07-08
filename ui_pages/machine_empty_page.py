@@ -275,14 +275,6 @@ class MachineEmptyPage(Screen):
                 if cups_data and cups_data.get("success", False):
                     cups_count = cups_data.get("cups", 0)
                     from config import MACHINE_EMPTY_THRESHOLD
-                    
-                    # Prevent cloud-vs-hardware infinite loop:
-                    # If the Kulhad dashboard (API) says we have cups, but the physical optical sensor
-                    # still says we are empty, we MUST trust the hardware! 
-                    hardware_cups = getattr(app, 'local_cups_count', 0)
-                    if cups_count > MACHINE_EMPTY_THRESHOLD and hardware_cups <= MACHINE_EMPTY_THRESHOLD:
-                        print(f"⚠️ [MachineEmpty] API says {cups_count} cups, but hardware says {hardware_cups}! Trusting hardware and staying empty.")
-                        return
 
                     if cups_count > MACHINE_EMPTY_THRESHOLD:
                         # Require 2 consecutive confirmed-restocked reads (~6s apart)
