@@ -44,6 +44,14 @@ def get_system_health():
         }
         if latency_ms is not None:
             health_data["latency_ms"] = latency_ms
+            
+        # Read the current OTA version
+        try:
+            with open('/opt/urban-kettle/current_version.txt', 'r') as f:
+                health_data["app_version"] = f.read().strip()
+        except Exception:
+            health_data["app_version"] = "unknown"
+            
         return health_data
     except Exception as e:
         print(f"⚠️ [SystemHealth] Could not read system health: {e}")
