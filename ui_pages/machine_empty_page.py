@@ -119,21 +119,29 @@ class MachineEmptyPage(Screen):
         self.add_widget(main_layout)
     
     def set_mode(self, mode, refill_label=None):
-        """Switch between 'empty', 'offline', 'water_low', and 'service_refill'.
+        """Switch between 'empty', 'offline', 'water_low', 'service_refill', and 'closed_hours'.
 
         'offline'/'water_low' are genuine hardware/connectivity problems → "Under Maintenance".
         'empty' is a normal low-stock refill → reassuring "Refill on its way" message.
         'service_refill' is a scheduled refill window → shows when the refill is coming.
+        'closed_hours' is for non-operating hours → "next tea service will start @XX:XX".
         """
         self.current_mode = mode
         if mode == 'offline' or mode == 'water_low':
             self.title_label.text = "Under Maintenance"
             self.subtitle_label.text = "We'll be back soon!"
             self.info_label.text = "Sorry for the inconvenience\nPlease check back shortly"
+        elif mode == 'closed_hours':
+            # refill_label contains the dynamic start time (e.g., "7:00 AM")
+            self.title_label.text = f"Next tea service will start @{refill_label}" if refill_label else "Next tea service starting soon"
+            self.title_label.font_size = '22sp'  # Make title slightly smaller to fit the long sentence
+            self.subtitle_label.text = ""
+            self.info_label.text = "See you then!"
         elif mode == 'service_refill':
-            self.title_label.text = "We'll be back soon!"
-            self.subtitle_label.text = f"Refill at {refill_label}" if refill_label else "Refill coming soon"
-            self.info_label.text = "Please visit us again after the refill"
+            self.title_label.text = f"Next tea service will start @{refill_label}" if refill_label else "Next tea service starting soon"
+            self.title_label.font_size = '22sp'  # Make title slightly smaller to fit the long sentence
+            self.subtitle_label.text = ""
+            self.info_label.text = "See you then!"
         else:
             self.title_label.text = "We'll be back soon!"
             self.subtitle_label.text = "Refill on its way"

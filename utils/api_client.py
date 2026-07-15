@@ -55,14 +55,15 @@ class ApiClient:
         
         def warmup_background():
             try:
+                from config import RFID_BASE_URL
                 print("🔥 Warming up API connections...")
-                
-                # Warm up kulhad.vercel.app (where QR APIs are hosted)
+
+                # Warm up kulhad.vercel.app (QR APIs) and the configured RFID backend
                 warmup_urls = [
                     f"https://kulhad.vercel.app/api/MachinesStatus?machineId={MACHINE_ID}",
-                    "https://www.ukteawallet.com",
+                    RFID_BASE_URL,
                 ]
-                
+
                 for url in warmup_urls:
                     try:
                         # HEAD request is faster than GET

@@ -20,14 +20,23 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 
-from config import MACHINE_ID, RFID_MACHINE_ID
+from config import MACHINE_ID, RFID_MACHINE_ID, RFID_BASE_URL
 
 class RFIDAESAuth:
     """RFID AES Authentication Handler"""
     
-    def __init__(self, base_url="https://www.ukteawallet.com", machine_id=RFID_MACHINE_ID):
+    def __init__(self, base_url=None, machine_id=RFID_MACHINE_ID):
         self.machine_id = machine_id
-        self.base_url = base_url
+        # Default to whichever backend config.py points at.
+        # Pass base_url explicitly to override (e.g. for testing).
+        self.base_url = (base_url or RFID_BASE_URL).rstrip("/")
+        # Kulhad mode: if the backend is NOT ukteawallet.com we skip the
+        # physical DESFire APDU exchange — auth is a pure server-side balance check.
+        self.kulhad_mode = "ukteawallet.com" not in self.base_url
+        if self.kulhad_mode:
+            print(f"✓ RFID using Kulhad backend: {self.base_url}")
+        else:
+            print(f"✓ RFID using ukteawallet backend: {self.base_url}")
         self.session_id = None
         self.connection = None
         self.reader = None  # Store reader object
@@ -425,6 +434,50 @@ class RFIDAESAuth:
                     "cardId": card_uid
                 }
 
+            # ── Kulhad mode: no physical APDU exchange needed ─────────────────
+            # Kulhad auth is purely a server-side balance check (card UID +
+            # machine ID is enough).  We still call /step2 and /verify to keep
+            # the URL contract identical, but we send dummy cardResponse values
+            # instead of real APDU data from the physical card.
+            if self.kulhad_mode:
+                session_id = data['sessionId']
+                print(f"✓ Kulhad session: {session_id}")
+
+                # Step 2 (dummy cardResponse — no card crypto needed)
+                r2 = self.http_session.post(
+                    f"{self.base_url}/api/rfid/auth/step2",
+                    json={"sessionId": session_id, "cardResponse": "KULHAD_BYPASS"},
+                    timeout=4
+                )
+                if r2.status_code != 200 or not r2.json().get('success'):
+                    self._auth_in_progress = False
+                    return {"success": False, "error": "Kulhad step2 failed"}
+
+                # Verify (dummy cardResponse)
+                r3 = self.http_session.post(
+                    f"{self.base_url}/api/rfid/auth/verify",
+                    json={"sessionId": session_id, "cardResponse": "KULHAD_BYPASS", "machineId": self.machine_id},
+                    timeout=4
+                )
+                if r3.status_code != 200:
+                    self._auth_in_progress = False
+                    return {"success": False, "error": "Kulhad verify failed"}
+
+                v = r3.json()
+                self._auth_in_progress = False
+                print("▶️ RF Keep-Alive resumed (Kulhad mode)")
+                return {
+                    "success": v.get('success', False),
+                    "authenticated": v.get('authenticated', False),
+                    "dispensed": v.get('dispensed', False),
+                    "remainingBalance": v.get('remainingBalance', '0'),
+                    "businessUnitName": v.get('businessUnitName', ''),
+                    "machineLocation": v.get('machineLocation', ''),
+                    "cardId": card_uid,
+                    "error": v.get('error', None)
+                }
+
+            # ── ukteawallet mode: full DESFire APDU exchange ───────────────────
             # Dispensing card — needs PC/SC APDU exchange with the physical card.
             # Try to open a fresh connection now (after verifying card type).
             print("🔗 Creating PC/SC connection for APDU exchange...")

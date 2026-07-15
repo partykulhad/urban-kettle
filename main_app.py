@@ -688,6 +688,14 @@ class ChaiOrderingApp(App):
                 self._service_refill_start = None
                 self._service_refill_end   = None
 
+            # ── Remote Test Dispense Command ──────────────────────────────────
+            pending_dispense_id = data.get("pendingDispenseId")
+            if pending_dispense_id:
+                if getattr(self, '_last_dispense_id', None) != pending_dispense_id:
+                    self._last_dispense_id = pending_dispense_id
+                    updated.append(f"remoteDispense={pending_dispense_id}")
+                    threading.Thread(target=self._trigger_remote_dispense, daemon=True).start()
+
             # ── Kulhad-commanded online/offline (manual dashboard toggle) ────
             # previous_machine_state reflects the Pi's own last-known real-world
             # state (from ESP32 health checks). If Kulhad's status disagrees with
@@ -744,6 +752,44 @@ class ChaiOrderingApp(App):
             label = _dt.combine(_dt.today(), e).strftime("%I:%M %p").lstrip("0")
             return True, label
         return False, None
+
+    def _trigger_remote_dispense(self):
+        """Sends a single tea dispense command to the ESP32 (triggered from Kulhad)."""
+        import uuid
+        from config import DEVICE_ID, ml_to_pump_ms, POLLING_SERVER_URL
+        from utils.api_client import get_localhost_session
+        
+        job_id = f"job_rmt_{uuid.uuid4().hex[:10]}"
+        command_id = f"cmd_rmt_{uuid.uuid4().hex[:10]}"
+        ml = self.ml_to_dispense
+        
+        payload = {
+            "messageType": "command",
+            "commandType": "control",
+            "version": "1.0",
+            "commandId": command_id,
+            "deviceId": DEVICE_ID,
+            "command": {
+                "action": "start_dispense",
+                "parameters": {
+                    "jobId": job_id
+                }
+            }
+        }
+        url = f"{POLLING_SERVER_URL}/api/device/command"
+        print(f"🚀 [RemoteDispense] Triggering test dispense for {ml} ml...")
+        
+        try:
+            session = get_localhost_session()
+            resp = session.post(url, json=payload, timeout=35)
+            if resp.status_code == 200:
+                print("✅ [RemoteDispense] Command accepted by ESP32/polling server")
+                # Immediately decrement the local cups count by 1
+                self.decrement_local_cups(1)
+            else:
+                print(f"❌ [RemoteDispense] Failed: HTTP {resp.status_code} - {resp.text}")
+        except Exception as e:
+            print(f"❌ [RemoteDispense] Error sending command: {e}")
 
     # =========================================================================
     # Operating hours — auto OFFLINE at close, auto ONLINE 40 min before open
@@ -850,6 +896,31 @@ class ChaiOrderingApp(App):
         print(f"⏰ [OperatingHours] ONLINE cmd at {prestart_dt.strftime('%Y-%m-%d %I:%M %p')} "
               f"(in {(prestart_dt - now).total_seconds() / 3600:.1f}h)")
 
+        # ── Schedule UI OPEN trigger ─────────────────────────────────────────
+        start_dt = _dt.combine(now.date(), start_t)
+        if start_dt <= now:
+            start_dt += _td(days=1)
+        t_open = threading.Timer((start_dt - now).total_seconds(), self._on_operating_ui_open)
+        t_open.daemon = True
+        t_open.start()
+        self._operating_timers.append(t_open)
+        print(f"⏰ [OperatingHours] UI OPEN at {start_dt.strftime('%Y-%m-%d %I:%M %p')} "
+              f"(in {(start_dt - now).total_seconds() / 3600:.1f}h)")
+
+    def is_in_ui_operating_hours(self):
+        """Check if current time is strictly within the UI open window (start_t to end_t + 30m grace)."""
+        if not self._operating_start or not self._operating_end:
+            return True
+        from datetime import datetime as _dt, timedelta as _td
+        now_t = _dt.now().time()
+        start_t = self._operating_start
+        offline_t = (_dt.combine(_dt.today(), self._operating_end) + _td(minutes=30)).time()
+        
+        if start_t < offline_t:
+            return start_t <= now_t < offline_t
+        else:
+            return now_t >= start_t or now_t < offline_t
+
     def _operating_go_offline(self):
         """Send OFFLINE to ESP32 and switch UI to machine_empty (background-safe)."""
         self.send_machine_state_to_esp32("OFFLINE", "operating_hours")
@@ -863,10 +934,15 @@ class ChaiOrderingApp(App):
         # as "Offline" even when the Pi is healthy and running.
         self.start_scheduled_flush_monitor(120)
         def _ui(dt):
-            self.machine_empty_page.set_mode('offline')
+            # Format the start time to something like "7:00 AM" if available
+            start_str = None
+            if hasattr(self, '_operating_start') and self._operating_start:
+                start_str = self._operating_start.strftime('%I:%M %p').lstrip('0')
+            
+            self.machine_empty_page.set_mode('closed_hours', start_str)
             self.show_page('machine_empty')
             self.previous_machine_state = "offline"
-            print("🔴 [OperatingHours] UI → machine_empty (closed hours)")
+            print(f"🔴 [OperatingHours] UI → machine_empty (closed_hours, opens at {start_str})")
         Clock.schedule_once(_ui, 0)
 
     def _operating_go_online(self):
@@ -970,6 +1046,13 @@ class ChaiOrderingApp(App):
                     self._operating_end.strftime('%H:%M')
                 ), 1
             )
+
+    def _on_operating_ui_open(self):
+        """Fires at exactly the start time to wake up the UI from the 'closed' message."""
+        print("🟢 [OperatingHours] Official start time reached — checking heating to open UI")
+        # Ensure previous state is marked online so check_heating_on_startup can proceed
+        Clock.schedule_once(lambda dt: setattr(self, 'previous_machine_state', 'online'), 0)
+        Clock.schedule_once(lambda dt: self.check_heating_on_startup(), 0)
 
     def _fetch_flush_timing_and_schedule(self):
         """Arm the flush idle timer using flushTimeMinutes from Kulhad.
@@ -2114,7 +2197,15 @@ class ChaiOrderingApp(App):
                 Clock.schedule_once(lambda dt: self.show_heating_page(temp), 0)
             else:
                 print(f"✅ Tea is ready: {temp:.1f}°C")
-                Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 0)
+                if not self.is_in_ui_operating_hours():
+                    print("🕒 Water is hot, but still before operating hours. Going to closed screen.")
+                    start_str = None
+                    if hasattr(self, '_operating_start') and self._operating_start:
+                        start_str = self._operating_start.strftime('%I:%M %p').lstrip('0')
+                    Clock.schedule_once(lambda dt: self.machine_empty_page.set_mode('closed_hours', start_str), 0)
+                    Clock.schedule_once(lambda dt: self.show_page('machine_empty'), 0)
+                else:
+                    Clock.schedule_once(lambda dt: self.show_payment_method_page(fetch_cups=True), 0)
 
         threading.Thread(target=check_temp_background, daemon=True).start()
     

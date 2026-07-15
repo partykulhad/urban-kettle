@@ -1560,7 +1560,6 @@ class PaymentMethodPage(Screen):
             try:
                 from utils.rfid_aes_auth import RFIDAESAuth
                 app.rfid_auth_handler = RFIDAESAuth(
-                    base_url="https://www.ukteawallet.com",
                     machine_id=RFID_MACHINE_ID
                 )
                 if app.rfid_auth_handler.reader_active:

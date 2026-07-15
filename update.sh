@@ -20,9 +20,9 @@ fi
 VERCEL_URL="https://kulhad.vercel.app"
 SERVICE="urban-kettle"
 REPO_DIR="/opt/urban-kettle"
-LOG_FILE="/tmp/update.log"
+LOG_FILE="$REPO_DIR/update.log"
 VERSION_FILE="$REPO_DIR/current_version.txt"
-DEB_FILE="/tmp/urban_kettle_update.deb"
+DEB_FILE="$REPO_DIR/urban_kettle_update.deb"
 
 # Ensure we don't blow up the log file
 if [ -f "$LOG_FILE" ]; then

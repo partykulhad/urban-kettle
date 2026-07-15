@@ -36,12 +36,27 @@ TEMP_SERVICE="/tmp/urban-kettle.service"
 # Replace /home/pi/urban-kettle with actual installation directory
 sed "s|/home/pi/urban-kettle|$INSTALL_DIR|g" "$SERVICE_FILE" > "$TEMP_SERVICE"
 
-# Replace pi user with current user
-CURRENT_USER=$(whoami)
-sed -i "s|User=pi|User=$CURRENT_USER|g" "$TEMP_SERVICE"
-sed -i "s|/home/pi/.Xauthority|$HOME/.Xauthority|g" "$TEMP_SERVICE"
+# Replace pi user with correct desktop user
+# When installed via .deb, whoami is 'root', which breaks the UI display.
+# We try to detect the actual user (urbanketl or pi).
+if id "urbanketl" &>/dev/null; then
+    CURRENT_USER="urbanketl"
+elif id "pi" &>/dev/null; then
+    CURRENT_USER="pi"
+else
+    # Fallback just in case
+    CURRENT_USER=$(who | grep -v root | awk '{print $1}' | head -n 1)
+    if [ -z "$CURRENT_USER" ]; then
+        CURRENT_USER="root"
+    fi
+fi
 
-echo "👤 Running as user: $CURRENT_USER"
+USER_HOME=$(eval echo "~$CURRENT_USER")
+
+sed -i "s|User=pi|User=$CURRENT_USER|g" "$TEMP_SERVICE"
+sed -i "s|/home/pi/.Xauthority|$USER_HOME/.Xauthority|g" "$TEMP_SERVICE"
+
+echo "👤 Running service as user: $CURRENT_USER (Home: $USER_HOME)"
 
 # Make launch script executable
 chmod +x "$INSTALL_DIR/launch_pi.sh"

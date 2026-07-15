@@ -36,7 +36,7 @@ class HardwareMonitor:
         # Cloud API for temperature reporting (every 2 minutes)
         self.cloud_api_url = "https://kulhad.vercel.app/api/machine-temperature"
         self.cloud_temp_thread = None
-        self.CLOUD_TEMP_INTERVAL = 15  # seconds — live temperature reporting to Kulhad
+        self.CLOUD_TEMP_INTERVAL = 300  # seconds — live temperature reporting to Kulhad (5 minutes)
         
         # Adaptive polling strategy
         self.consecutive_success_count = 0  # Count consecutive 200 responses

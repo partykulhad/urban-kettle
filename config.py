@@ -25,6 +25,12 @@ except ImportError:
 import os
 POLLING_SERVER_URL = os.environ.get("POLLING_SERVER_URL", "http://localhost:5000")
 
+# RFID Authentication backend.
+# Set to the Kulhad deployment URL to use Kulhad-hosted RFID (recommended).
+# Set to "https://www.ukteawallet.com" to fall back to the original wallet service.
+# The kiosk reads this and selects the appropriate auth flow automatically.
+RFID_BASE_URL = os.environ.get("RFID_BASE_URL", "https://kulhad.vercel.app")
+
 
 # ============================================================================
 # SENSOR ID CONFIGURATION
@@ -68,7 +74,7 @@ def ml_to_pump_ms(ml: float) -> int:
         110 ml → 12,222 ms
         120 ml → 13,333 ms
     """
-    return round((ml / PUMP_FLOW_RATE_ML_PER_SEC) * 1000)
+    return round((ml / PUMP_FLOW_RATE_ML_PER_SEC) * 1000 * 1.10)
 
 
 # ============================================================================

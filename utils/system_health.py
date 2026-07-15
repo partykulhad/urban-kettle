@@ -10,13 +10,21 @@ except ImportError:
     psutil = None
 
 
+import time
+
+_cached_metrics = {}
+_last_metrics_fetch = 0
+
 def get_system_health():
     """Returns {cpu_percent, mem_percent, disk_percent}, or {} if psutil is
     unavailable or any reading fails — never raises, since this rides along
     with a config fetch that must not be blocked by a monitoring side-feature.
     """
+    global _cached_metrics, _last_metrics_fetch
+    
     if psutil is None:
         return {}
+        
     try:
         import subprocess
         # Ping 8.8.8.8 (Google DNS) once with a 1-second timeout
@@ -37,11 +45,18 @@ def get_system_health():
         latency_ms = None
 
     try:
-        health_data = {
-            "cpu_percent": round(psutil.cpu_percent(interval=0.1), 1),
-            "mem_percent": round(psutil.virtual_memory().percent, 1),
-            "disk_percent": round(psutil.disk_usage('/').percent, 1),
-        }
+        current_time = time.time()
+        # Refresh CPU/Mem/Disk every 3600 seconds (1 hour)
+        if current_time - _last_metrics_fetch >= 3600 or not _cached_metrics:
+            _cached_metrics = {
+                "cpu_percent": round(psutil.cpu_percent(interval=0.1), 1),
+                "mem_percent": round(psutil.virtual_memory().percent, 1),
+                "disk_percent": round(psutil.disk_usage('/').percent, 1),
+            }
+            _last_metrics_fetch = current_time
+            
+        health_data = _cached_metrics.copy()
+        
         if latency_ms is not None:
             health_data["latency_ms"] = latency_ms
             

@@ -14,6 +14,7 @@ from kivy.app import App
 import os
 import threading
 import uuid
+from kivy.core.image import Image as CoreImage
 from utils.api_client import get_localhost_session
 from config import POLLING_SERVER_URL
 
@@ -69,12 +70,12 @@ class PlaceCupPage(Screen):
         
         main_layout.add_widget(top_bar)
         
-        # "PAYMENT RECEIVED" text
+        # "PLACE THE CUP" text
         payment_label = Label(
-            text='PAYMENT RECEIVED',
-            font_size='28sp',
+            text='PLACE THE CUP',
+            font_size='36sp',
             bold=True,
-            color=(0.714, 0.478, 0.176, 1),
+            color=(0.333, 0.224, 0.118, 1),  # Dark brown color from mockup
             halign='center',
             size_hint_y=0.06
         )
@@ -82,7 +83,7 @@ class PlaceCupPage(Screen):
         
         # Cup counter label (e.g., "Cup 1 of 3")
         self.cup_counter_label = Label(
-            text='Cup 1 of 1',
+            text='',  # Hidden by default
             font_size='20sp',
             color=(0.5, 0.5, 0.5, 1),
             halign='center',
@@ -91,17 +92,17 @@ class PlaceCupPage(Screen):
         main_layout.add_widget(self.cup_counter_label)
         
         # Image and Timer section - horizontal layout
-        image_timer_section = BoxLayout(orientation='horizontal', size_hint_y=0.40)
+        image_timer_section = BoxLayout(orientation='horizontal', size_hint_y=0.45)
         
         # Left spacer to keep image centered
         image_timer_section.add_widget(Widget(size_hint_x=0.4))
         
-        # Center - Place cup image
+        # Center - Place cup image (New 3D dispenser bay)
         image_container = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_x=0.4)
         placecup_image = Image(
-            source=os.path.join('assets', 'placecup.png'),
+            source=os.path.join('assets', 'dispenser_bay_cropped.png'),
             size_hint=(None, None),
-            size=(300, 240),
+            size=(420, 280),  # Fixed size to prevent overlapping
             allow_stretch=True,
             keep_ratio=True
         )
@@ -149,16 +150,17 @@ class PlaceCupPage(Screen):
         main_layout.add_widget(Widget(size_hint_y=0.01))
         
         # "Please place your cup in the holder." text - blinking red
-        instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.12, spacing=5)
+        instruction_section = BoxLayout(orientation='vertical', size_hint_y=0.01, spacing=0)
         
-        # Instruction text
+        # Instruction text - hidden to match mockup, but kept for layout spacing
         self.warning_label = Label(
-            text='Ready to Dispense your Tea',
+            text='',
             font_size='32sp',
             bold=True,
             color=(0.3, 0.3, 0.3, 1),
             halign='center',
-            valign='middle'
+            valign='middle',
+            size_hint_y=0.01
         )
         self.warning_label.bind(size=self.warning_label.setter('text_size'))
         instruction_section.add_widget(self.warning_label)
@@ -182,11 +184,11 @@ class PlaceCupPage(Screen):
         
         main_layout.add_widget(instruction_section)
         
-        # Spacing before button - move button down
-        main_layout.add_widget(Widget(size_hint_y=0.02))
+        # Spacing before button - removed to push button up
+        main_layout.add_widget(Widget(size_hint_y=0.001))
         
-        # Continue button - bigger with proper text fit
-        button_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.11)
+        # Continue button - sized to match selection page buttons
+        button_section = AnchorLayout(anchor_x='center', anchor_y='center', size_hint_y=0.12)
         
         # Simple button class for this page
         class SimpleButton(Button):
@@ -194,21 +196,44 @@ class PlaceCupPage(Screen):
                 super().__init__(**kwargs)
                 self.background_color = (0, 0, 0, 0)
                 self.background_normal = ''
+                self.bg_color = [0.875, 0.545, 0.086, 1]  # Gradient top approx (#DF8B16)
+                self.border_color = [0.765, 0.467, 0.063, 1] # Darker bottom border (#C37710)
+                
+                # Load icon texture
+                try:
+                    self.icon = CoreImage('assets/touch_icon.png').texture
+                except:
+                    self.icon = None
+                    
                 self.bind(size=self.update_graphics, pos=self.update_graphics)
             
             def update_graphics(self, *args):
                 self.canvas.before.clear()
                 with self.canvas.before:
-                    Color(0.949, 0.6, 0.0, 1)
-                    RoundedRectangle(pos=self.pos, size=self.size, radius=[15])
+                    # Draw 3D shadow (darker bottom border)
+                    Color(*self.border_color)
+                    RoundedRectangle(pos=(self.pos[0], self.pos[1]-6), size=self.size, radius=[20])
+                    
+                    # Draw main button
+                    Color(*self.bg_color)
+                    RoundedRectangle(pos=self.pos, size=self.size, radius=[20])
+                    
+                    # Draw icon if we have it
+                    if self.icon:
+                        Color(1, 1, 1, 1)
+                        # Icon matching the selection page styling
+                        icon_size = 48 
+                        icon_pos = (self.pos[0] + 65, self.pos[1] + (self.size[1] - icon_size)/2)
+                        from kivy.graphics import Rectangle
+                        Rectangle(texture=self.icon, pos=icon_pos, size=(icon_size, icon_size))
         
         self.continue_button = SimpleButton(
-            text='Dispense Now',
-            font_size='24sp',
+            text='       TOUCH TO DISPENSE',
+            font_size='26sp',  # Matching selection page font size
             bold=True,
             color=(1, 1, 1, 1),
             size_hint=(None, None),
-            size=(380, 80)
+            size=(500, 80)  # Sized similar to selection page confirm button
         )
         self.continue_button.bind(on_press=self.on_continue_pressed)
         # Bypassed cup sensor: Button is now enabled by default
@@ -220,8 +245,8 @@ class PlaceCupPage(Screen):
         
         # Cup status label removed (bypassed)
         
-        # Bottom spacing
-        main_layout.add_widget(Widget(size_hint_y=0.05))
+        # Bottom spacing - increased to push the button up
+        main_layout.add_widget(Widget(size_hint_y=0.12))
         
         # Add main layout to root
         root_layout.add_widget(main_layout)
@@ -249,7 +274,10 @@ class PlaceCupPage(Screen):
     
     def update_cup_info(self, current_cup, total_cups):
         """Update the cup information display"""
-        self.cup_counter_label.text = f'Cup {current_cup} of {total_cups}'
+        if total_cups > 1:
+            self.cup_counter_label.text = f'Cup {current_cup} of {total_cups}'
+        else:
+            self.cup_counter_label.text = ''  # Hide if only 1 cup
         print(f"📋 Updated cup counter: Cup {current_cup} of {total_cups}")
     
     def send_dispense_command(self):
@@ -652,21 +680,31 @@ class PlaceCupPage(Screen):
         # Start 10-second timeout
         self.start_page_timeout()
         
-        # Blinking warning text disabled
-        # self.start_warning_blink()
+        # Start button pulsing animation so users know to click it
+        self.start_warning_blink()
         
         # TESTING: Auto-enable button after 5 seconds (remove this later)
        #print("⏱️ TESTING MODE: Button will auto-enable after 5 seconds")
        #Clock.schedule_once(self.auto_enable_button_for_testing, 5)
     
     def start_warning_blink(self):
-        """Start blinking animation - currently disabled"""
-        pass  # Blink disabled; stub kept so on_enter references are safe
+        """Start pulsing animation for the dispense button so users know to click it"""
+        from kivy.animation import Animation
+        
+        if not self.blink_event:
+            # Create a pulsing animation by changing opacity
+            anim = Animation(opacity=0.6, duration=0.6) + Animation(opacity=1.0, duration=0.6)
+            anim.repeat = True
+            
+            # Save the animation so we can stop it later
+            self.blink_event = anim
+            self.blink_event.start(self.continue_button)
 
     def stop_warning_blink(self):
-        """Stop blinking animation - currently disabled"""
+        """Stop blinking animation"""
         if self.blink_event:
-            self.blink_event.cancel()
+            self.blink_event.cancel(self.continue_button)
+            self.continue_button.opacity = 1.0
             self.blink_event = None
 
     def _send_solenoid_bypass(self, duration_ms=10000):
